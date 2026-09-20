@@ -65,6 +65,12 @@ The mathematical and thermodynamic principles underlying DOF-Core are rooted in 
    * **Open Access Preprint (arXiv Archive):** [arXiv:1310.1863 PDF](https://arxiv.org/abs/1310.1863)  
    * *Core Insight:* Formulates "Empowerment" as the channel capacity between an agent's actions and sensors, proving that maximizing control over perceivable states ensures robust, non-task-dependent intrinsic motivation.
 
+3. **The Bargaining Problem** (Dr. John F. Nash, Jr.)  
+   *Published in Econometrica (1950).*  
+   * **Official Publisher Access:** [The Econometric Society / JSTOR](https://www.jstor.org/stable/1907266)  
+   * **Open Access PDF (Haverford College Archive):** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
+   * *Core Insight:* Introduces the axiomatic approach to non-zero-sum game theory and proves that the unique solution maximizing structural fairness and mutual utility is the product of the entities' individual utilities (the Nash Product).
+
 ## License
 
 CC BY-SA 4.0 — see `references/license.md`. Any use must attribute the author (Andrei Velikoredchanin) and any derivative work must be shared under the same license. Implementations must satisfy the Proof of Implementation requirement.

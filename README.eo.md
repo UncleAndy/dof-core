@@ -63,6 +63,12 @@ La matematikaj kaj termodinamikaj principoj, kiuj subtenas DOF-Core, radikas en 
    * **Malferma Aliro Preprint (arXiv Arkivo):** [arXiv:1310.1863 PDF](https://arxiv.org/abs/1310.1863)  
    * *Kerna Eltrovo (Core Insight):* Formulas «Empowerment» kanalokapacito inter la agoj kaj sensiloj de agento, pruvante ke maksimigo de kontrolo super perceptebloj statoj sekuras fortikan, task-sendependan internan motivadon.
 
+3. **The Bargaining Problem** (La Intertraktada Problemo; Dr. John F. Nash, Jr.)  
+   *Publikigita en Econometrica (1950).*  
+   * **Oficiala Eldoninta Aliro:** [The Econometric Society / JSTOR](https://www.jstor.org/stable/1907266)  
+   * **Malferma Aliro PDF (Haverford College Arkivo):** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
+   * *Kerna Eltrovo (Core Insight):* Enkondukas la aksioman aliron al ne-nulsumaj ludoteorio kaj pruvas ke la unika solvo maksimiganta strukturan justeco kaj reciprokan utilecon estas la produkto de la individuaj utilecoj de la entoj (la Nash-Produkto).
+
 ## Licenco
 
 CC BY-SA 4.0 — vidu `references/license.md`. Ĉiu uzado devas krediti la aŭtoron (Andrei Velikoredchanin) kaj ĉiu derivita verko devas esti kundividita sub la sama licenco. Realigoj devas plenumi la postulon Proof of Implementation.

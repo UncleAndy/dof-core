@@ -63,6 +63,12 @@ Les principes mathématiques et thermodynamiques sous-jacents à DOF-Core sont a
    * **Préimpression Open Access (Archive arXiv) :** [arXiv:1310.1863 PDF](https://arxiv.org/abs/1310.1863)  
    * *Aperçu fondamental (Core Insight) :* Formule l'« Empowerment » comme la capacité de canal entre les actions et les capteurs d'un agent, démontrant que la maximisation du contrôle sur les états perceptibles assure une motivation intrinsèque robuste et indépendante de la tâche.
 
+3. **The Bargaining Problem** (Le problème de la négociation ; Dr. John F. Nash, Jr.)  
+   *Publié dans Econometrica (1950).*  
+   * **Accès officiel chez l'éditeur :** [The Econometric Society / JSTOR](https://www.jstor.org/stable/1907266)  
+   * **PDF Open Access (Archive Haverford College) :** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
+   * *Aperçu fondamental (Core Insight) :* Introduit l'approche axiomatique de la théorie des jeux à somme non nulle et démontre que l'unique solution maximisant l'équité structurelle et l'utilité mutuelle est le produit des utilités individuelles des entités (le produit de Nash).
+
 ## Licence
 
 CC BY-SA 4.0 — voir `references/license.md`. Toute utilisation doit créditer l'auteur (Andrei Velikoredchanin) et toute œuvre dérivée doit être partagée sous la même licence. Les implémentations doivent satisfaire l'exigence Proof of Implementation.
