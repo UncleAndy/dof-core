@@ -69,6 +69,18 @@ Die mathematischen und thermodynamischen Prinzipien, die DOF-Core zugrunde liege
    * **Open Access PDF (Haverford College Archive):** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
    * *Kernaussage (Core Insight):* Führt den axiomatischen Ansatz zur Nicht-Nullsummen-Spieltheorie ein und beweist, dass die eindeutige Lösung, die strukturelle Fairness und gegenseitigen Nutzen maximiert, das Produkt der individuellen Nutzen der Entitäten ist (das Nash-Produkt).
 
+## Architektur
+
+DOF-Core ist als geschlossener Regelkreis konzipiert — Kreativität und Einschränkung untrennbar durch Rückkopplung gekoppelt:
+
+| Komponente | Rolle in der Regelungstechnik | Implementierung | Datei |
+|---|---|---|---|
+| **SKILL.md** | Führungsgröße (Sollwert) — programmiert die «Weltanschauung» des kreativen Generators | Markdown-Prompt für das LLM | `SKILL.md` |
+| **DOF-SPEC.md** | Begrenzungsblock (Rückkopplung + Zensor) — deterministischer Filter für jede Option | Normtext + 4 Sprachports (Python/Rust/Go/C++) | `DOF-SPEC.md` |
+| **Calculus Core** | Stellglied — verstärkt Vorschläge, führt validierte Entscheidungen aus | Rust via PyO3, rekursive Baum-Suche, Admissibility Gate | `src/lib.rs` |
+
+Der Generator (LLM) schlägt Optionen vor → DOF-SPEC (Begrenzungsblock) prüft jede gegen die Axiome → Admissibility Gate weist ungültige Zweige innerhalb von Millisekunden ab. Eine destruktive Option kommt nicht durch, selbst wenn der Generator «halluziniert».
+
 ## Lizenz
 
 CC BY-SA 4.0 — siehe `references/license.md`. Jede Nutzung muss den Autor (Andrei Velikoredchanin) nennen, und jedes abgeleitete Werk muss unter derselben Lizenz geteilt werden. Implementierungen müssen die Proof-of-Implementation-Anforderung erfüllen.

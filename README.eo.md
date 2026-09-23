@@ -69,6 +69,18 @@ La matematikaj kaj termodinamikaj principoj, kiuj subtenas DOF-Core, radikas en 
    * **Malferma Aliro PDF (Haverford College Arkivo):** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
    * *Kerna Eltrovo (Core Insight):* Enkondukas la aksioman aliron al ne-nulsumaj ludoteorio kaj pruvas ke la unika solvo maksimiganta strukturan justeco kaj reciprokan utilecon estas la produkto de la individuaj utilecoj de la entoj (la Nash-Produkto).
 
+## Arkitekturo
+
+DOF-Core estas konstruita kiel fermita regilo-sistemo — kreemo kaj limigo neapereble kuniĝitaj per retroago:
+
+| Komponento | Rolo en la regilo-teorio | Realizo | Dosiero |
+|---|---|---|---|
+| **SKILL.md** | Referenco (celvaloro) — programas la "mondbildon" de la kreema generilo | Markdown-promptiĝo por LLM | `SKILL.md` |
+| **DOF-SPEC.md** | Bloko de limigoj (retroago + cenzoro) — determinila filtro validigante ĉiun opcion | Norma teksto + 4 lingvopordoj (Python/Rust/Go/C++) | `DOF-SPEC.md` |
+| **Calculus Core** | Aktoro — plifortigas proponojn, ekzekutas validigitajn decidojn | Rust per PyO3, rekursiva serĉo, Admissibility Gate | `src/lib.rs` |
+
+La generilo (LLM) proponas opciojn → DOF-SPEC (limigo-bloko) validigas ĉiun kontraŭ la aksiomo → Admissibility Gate forĝas validajn branĝojn en milisekundoj. Detruiva opcio ne trafos, eĉ se la generilo "halucinas".
+
 ## Licenco
 
 CC BY-SA 4.0 — vidu `references/license.md`. Ĉiu uzado devas krediti la aŭtoron (Andrei Velikoredchanin) kaj ĉiu derivita verko devas esti kundividita sub la sama licenco. Realigoj devas plenumi la postulon Proof of Implementation.

@@ -69,6 +69,18 @@ Los principios matemáticos y termodinámicos que subyacen a DOF-Core están arr
    * **PDF de acceso abierto (Archivo Haverford College):** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
    * *Visión central (Core Insight):* Introduce el enfoque axiomático de la teoría de juegos de suma no cero y demuestra que la única solución que maximiza la equidad estructural y la utilidad mutua es el producto de las utilidades individuales de las entidades (el producto de Nash).
 
+## Arquitectura
+
+DOF-Core está construido como un sistema de control en bucle cerrado: la creatividad y las limitaciones están inseparablemente unidas mediante retroalimentación:
+
+| Componente | Rol en la teoría de control | Implementación | Archivo |
+|---|---|---|---|
+| **SKILL.md** | Consigna (valor de referencia) — programa la "visión del mundo" del generador creativo | Prompt Markdown para el LLM | `SKILL.md` |
+| **DOF-SPEC.md** | Bloque de restricciones (retroalimentación + censor) — filtro determinista que valida cada opción | Texto normativo + 4 puertos de idioma (Python/Rust/Go/C++) | `DOF-SPEC.md` |
+| **Calculus Core** | Actuador — amplifica propuestas, ejecuta decisiones validadas, ejecuta búsqueda en árbol | Rust vía PyO3, búsqueda recursiva, Admissibility Gate | `src/lib.rs` |
+
+El generador (LLM) propone opciones → DOF-SPEC (bloque de restricciones) verifica cada una contra los axiomas → la Admissibility Gate descarta las ramas inválidas en milisegundos. Una opción destructiva no puede pasar incluso si el generador alucina.
+
 ## Licencia
 
 CC BY-SA 4.0 — véase `references/license.md`. Cualquier uso debe acreditar al autor (Andrei Velikoredchanin) y cualquier obra derivada debe compartirse bajo la misma licencia. Las implementaciones deben satisfacer el requisito Proof of Implementation.

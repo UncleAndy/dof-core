@@ -69,6 +69,18 @@ Les principes mathématiques et thermodynamiques sous-jacents à DOF-Core sont a
    * **PDF Open Access (Archive Haverford College) :** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
    * *Aperçu fondamental (Core Insight) :* Introduit l'approche axiomatique de la théorie des jeux à somme non nulle et démontre que l'unique solution maximisant l'équité structurelle et l'utilité mutuelle est le produit des utilités individuelles des entités (le produit de Nash).
 
+## Architecture
+
+DOF-Core est conçu comme un système de commande en boucle fermée — créativité et contrainte inextricablement couplées par rétroaction :
+
+| Composant | Rôle en théorie de commande | Implémentation | Fichier |
+|---|---|---|---|
+| **SKILL.md** | Consigne (valeur de référence) — programme la « vision du monde » du générateur créatif | Prompt Markdown pour le LLM | `SKILL.md` |
+| **DOF-SPEC.md** | Bloc de contraintes (rétroaction + censeur) — filtre déterministe validant chaque option | Texte normatif + 4 ports linguistiques (Python/Rust/Go/C++) | `DOF-SPEC.md` |
+| **Calculus Core** | Actionneur — amplifie les propositions, exécute les décisions validées | Rust via PyO3, recherche arborescente récursive, Admissibility Gate | `src/lib.rs` |
+
+Le générateur (LLM) propose des options → DOF-SPEC (bloc de contraintes) vérifie chacune contre les axiomes → l'Admissibility Gate rejette les branches invalides en quelques millisecondes. Une option destructrice ne peut pas passer, même si le générateur hallucine.
+
 ## Licence
 
 CC BY-SA 4.0 — voir `references/license.md`. Toute utilisation doit créditer l'auteur (Andrei Velikoredchanin) et toute œuvre dérivée doit être partagée sous la même licence. Les implémentations doivent satisfaire l'exigence Proof of Implementation.

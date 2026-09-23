@@ -71,6 +71,18 @@ The mathematical and thermodynamic principles underlying DOF-Core are rooted in 
    * **Open Access PDF (Haverford College Archive):** [John Nash 1950 Paper](https://www.haverford.edu/sites/default/files/Nash1950.pdf)  
    * *Core Insight:* Introduces the axiomatic approach to non-zero-sum game theory and proves that the unique solution maximizing structural fairness and mutual utility is the product of the entities' individual utilities (the Nash Product).
 
+## Architecture
+
+DOF-Core is built as a closed-loop control system — creativity and constraint inseparably coupled through feedback:
+
+| Component | Role in control theory | Implementation | File |
+|---|---|---|---|
+| **SKILL.md** | Setpoint (reference input) — programs the "worldview" of the creative generator | Markdown prompt for the LLM | `SKILL.md` |
+| **DOF-SPEC.md** | Constraint block (feedback + censor) — deterministic filter that validates every generated option | Normative text + four language ports (Python/Rust/Go/C++) | `DOF-SPEC.md` |
+| **Calculus Core** | Actuator — amplifies proposals, executes validated decisions, runs tree-search | Rust via PyO3, recursive lookahead, Admissibility Gate | `src/lib.rs` |
+
+The generator (LLM) proposes options → DOF-SPEC (the constraint block) verifies each against the axioms → the Admissibility Gate rejects invalid branches within milliseconds of execution. A destructive option cannot pass through even if the generator hallucinates it.
+
 ## License
 
 CC BY-SA 4.0 — see `references/license.md`. Any use must attribute the author (Andrei Velikoredchanin) and any derivative work must be shared under the same license. Implementations must satisfy the Proof of Implementation requirement.
