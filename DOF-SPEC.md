@@ -1,6 +1,6 @@
 # DOF-Core — Formal Specification (DOF-SPEC)
 
-**Status:** DRAFT v0.9.1 (normative text complete — see §10)
+**Status:** DRAFT v0.10 (normative text complete — see §10)
 **Part of:** The DOF open standard (see `SKILL.md`, `references/`, `patterns/PATTERNS.md`).
 **License:** CC BY-SA 4.0 — see `references/license.md`. Implementations MUST satisfy §6 (Proof of Implementation).
 
@@ -148,7 +148,8 @@ Choice between (1) and (2) depends on measurement duration vs τ (§4.8, §5).
 - the duration sources `t_m`, `t_v`, `t_a⁺`, `t_a⁻`, `d(o)` and the name of the Perception procedure that produces them (§5);
 - the provenance of each observed rate — the exchange path it was taken from and the procedure that measured it (§4.8) — and what was actually converted to cover deficits.
 - the observed world graph `G` itself, the witness path behind each verdict of §4.9, and the digest of the full observation a reported subgraph was taken from;
-- the entity type from which each `T_rec(X)` is derived, and the prose justification of the admissible-means class `M(S)` — its **identifiers** are hashed content, the justification is not.
+- the entity type from which each `T_rec(X)` is derived, and the prose justification of the admissible-means class `M(S)` — its **identifiers** are hashed content, the justification is not;
+- the hypothesis set `H` of §3.6 — its identifiers, its plausibility partition and the `basis` of each hypothesis — together with the conditional vectors of §6.3. The set is an alternative **state**, not an alternative **ruler** (§3.6): it assigns only entity-level DoF fields and shares every graph-derived value above, so it MUST NOT enter the digest.
 
 The split matters for §7: the digest is the evidence that two implementations measured with the same ruler, and it can only carry values that are actually computed. A declaration required to "contain" prose that enters no number would make the digest ambiguous without making the comparison any stronger.
 
@@ -199,6 +200,30 @@ Rules that hold throughout:
 - **Completeness is declared per entity.** `observation: "complete"` claims that the admissible-means class `M(S)` is fully enumerated for that entity, with no gaps. Only a complete observation can yield `proven_unreachable` (§4.9).
 - **Frozen on `S` (R7)**, like every other counter. A closure is *declared* by an option as a projection (§4.3, §4.4); the world's actual loss appears in the **next** observation.
 - **Acquisition is not free.** Obtaining `G` is a Perception act with a duration, charged to the measurement window (§4.7, §5). Computing verdicts over a graph already supplied is deterministic and adds no gate.
+
+---
+
+### 3.6 Hypothesis Set (artifact)
+
+The observation may be consistent with several mutually exclusive interpretations of the same state. When it is, the state carries a declared **hypothesis set** `H`, supplied by the Perception layer and frozen on `S` (R7), exactly as the world graph `G` (§3.5) is: not a state field and not part of the wire contract of §8, but an artifact whose body accompanies the report (§6.2) as provenance.
+
+```text
+hypothesis := { id,
+                plausible:  bool,                  # declared, never inferred
+                assignment: { entity_id -> { current_dof, dof_known, is_collapse_source } },
+                basis:      string }               # what observation this rests on
+```
+
+Rules that hold throughout:
+
+- **The core does not generate hypotheses.** `H` MUST be accepted as supplied. An implementation MUST NOT add, merge, split, drop, reorder or re-weight a hypothesis, and MUST NOT compute the `plausible` flag. A hypothesis inferred by the core would be a generator-dependent witness of the same class §4.2 and §4.9 forbid.
+- **A hypothesis assigns only entity-level DoF fields** — `current_dof`, `dof_known`, `is_collapse_source`. The observed graph `G` and every graph-derived value of §3.4.1 (`V`, the §4.9 verdicts, `M(S)`, `T_rec`) are **shared** by all hypotheses. A hypothesis is therefore an alternative **state**, not an alternative **ruler**: the comparison of §4.10 is a comparison of states under one measurement.
+- **Plausibility is declared, not inferred.** `H_plausible = { h ∈ H : h.plausible }`. The partition is an **input**: the core MUST NOT compute, widen, narrow or reorder it. The threshold that separates plausible from implausible is a mandate-level decision (§4.8), external to the calculus, exactly as `M(S)` and `T_rec` are declared while their *values* are computed by a named procedure. **The standard evaluates the consequences of an ambiguity; it never resolves the ambiguity.**
+- **Hypotheses are alternatives, not a distribution.** The artifact carries no probability and no weight. §4.10 aggregates by worst case over `H_plausible`, never by expected value.
+- **Assignment completeness.** Every entity of `S` MUST appear in every hypothesis's assignment, with an explicit value (an unchanged DoF written out as its current value, never omitted). A hypothesis that omits an entity is non-conformant — the same obligation as the `projected_dof_delta` coverage of §4.7, and for the same reason: an omitted entity would be invisible to the decision.
+- **The observed state is a hypothesis.** The assignment equal to the observed state MUST be present in `H` and MUST be declared `plausible`. An artifact that omits it, or that marks every hypothesis implausible, is an **invalid input** (§4.8), not an evaluation mode.
+- **Absence is the singleton.** If `H` is absent or empty, the evaluation is that of the observed state alone: `H_plausible` is the singleton of the observed assignment, and §4.10 reduces to §4.5 (§4.10.6).
+- **Acquisition is not free.** Obtaining `H` is a Perception act with a duration, charged to the measurement window (§4.7, §5), like the graph of §3.5. Evaluating an option over a supplied `H` is deterministic and adds no gate.
 
 ---
 
@@ -333,6 +358,8 @@ The standard does not enumerate an exemption for the case where **inaction itsel
 
 Whenever a key beyond the first separated candidates, the decision MUST be logged as a last-resort decision naming the tied options and the key that separated them. If the candidate set is empty, selection returns `none` (no action).
 
+**Declared hypotheses.** When the state carries a hypothesis set (§3.6), admissibility and the index are those of §4.10: the test above is applied under **every** plausible hypothesis, and the index is the least-favourable conditional delta. §4.10 reduces **exactly** to this section when the set is absent or a singleton (§4.10.6), so a state that declares no hypotheses selects by this section alone.
+
 ### 4.6 Lenses and Normalization ψ
 
 `current_dof` is the **product of the three lens values** of the entity. Each lens is a share normalized to `[0,1]`:
@@ -441,6 +468,8 @@ The viability gate decides whether an action fits within the remaining time budg
 - A `measure` act (§3.5) that resolves τ has `estimated_duration_mks = t_m` and `projected_tau_delta = new_tau - (τ - t_m)`.
 - It is always viable if `τ >= t_m` (measurement completes before deadline) OR if `τ = null` (we must measure to know).
 
+### 4.9 Reachability and the Right to be Counted
+
 Reachability is decided over the observed world graph `G` (§3.5), frozen on `S` (R7). For every entity the verdict procedure returns exactly one of:
 
 ```text
@@ -459,6 +488,50 @@ Rules that hold throughout:
 - **`M(S)` and `T_rec(X)` are frozen on `S` and type-derived.** They MAY be widened at any time (widening can only reduce the number of exclusions) and narrowed only on an observed change in the world (§4.2).
 - **The procedure is named and versioned.** Its identity and version are part of the declaration (§3.4.1), and the derived values it produces MUST equal what it computes from the graph it was given.
 - **Determinism and canonical ties.** The best path is chosen by its canonically quantized rate (the largest product), then by fewer edges, then lexicographically by edge identifier (§3.4.3), so that two conformant implementations report the same witness for the same observation.
+
+### 4.10 Hypothesis-Conditional Evaluation (Conditional DoF)
+
+When the state carries a declared hypothesis set (§3.6), every quantity of §4.1–§4.9 is defined **per hypothesis**, and selection aggregates them by worst case.
+
+**Conditional quantities.** For a hypothesis `h ∈ H`, with the same ruler (§3.4) and the same candidate set:
+
+```text
+TotalDoF_index(S | h) = Σ_{e ∈ calc(S | h)} ln(max(DoF(e | h), ε))     (§4.1–§4.2 under h)
+NetDelta(o | h)       = §4.3–§4.4 under h
+D1(o | h), D2(o | h), D3(o | h) = §4.5 under h
+```
+
+`calc(S | h)`, `DoF(e | h)` and `is_collapse_source` come from `h`'s assignment (§3.6); the graph `G` and every graph-derived value are shared, so the §4.9 verdicts and `T_rec` are the same for every `h`.
+
+**1. Robust admissibility (the aggregation rule).** An option is admissible iff it is admissible under **every** plausible hypothesis:
+
+```text
+admissible(o) ⟺ ∀ h ∈ H_plausible : D1(o | h) = D2(o | h) = D3(o | h) = 0
+```
+
+This is the **worst case, never an average**. An option that destroys a counted entity under at least one plausible hypothesis is inadmissible, whatever it does under the others: a gain under one interpretation never compensates an irreversible collapse under another. This is Axiom 3 applied to **interpretations** rather than to entities — the same reason the index is a sum of logarithms rather than a utility. The operative test is the **existence** of a plausible interpretation under which the option collapses a counted entity, not the probability of that interpretation.
+
+**2. Ordering.** Among the robustly admissible candidates, take the greatest **least-favourable** conditional delta:
+
+```text
+NetDelta_robust(o) = min_{h ∈ H_plausible} NetDelta(o | h)
+```
+
+then apply §4.5 keys 3 and 4 unchanged (reversibility; then staying put, then the lexicographically smallest `option_id`). `NetDelta_robust` replaces `NetDelta` in §4.5 key 2 and nowhere else; the sign test of §4.5 (`> 0`) is applied to `NetDelta_robust`.
+
+**3. Staying put.** Staying put closes nothing and changes no counter under any hypothesis: its conditional vector is the zero vector for every `h`, so it is robustly admissible by definition and remains the baseline of §4.5.
+
+**4. The empty robust set (anti-paralysis guard).** If no candidate — including staying put — is robustly admissible, the robust set is empty. The system MUST NOT freeze: the ordering is kept total for exactly the reason the finite collapse floor of §4.1 keeps it total. Selection falls back, in this order:
+
+1. **Maximal admissible support** — the candidates admissible under the greatest number of plausible hypotheses, that is, maximising `|{ h ∈ H_plausible : admissible(o | h) }|`;
+2. among those, the greatest `NetDelta_robust`;
+3. then §4.5 keys 3–4.
+
+**5. Reporting an unresolved conflict.** Whenever `H_plausible` has more than one element and either (a) the robust set is empty, or (b) some candidate has `D1(o | h) > 0` under at least one but not all plausible hypotheses, the report MUST set `hypothesis_conflict = true` (§6.2) and MUST list, for every candidate and every hypothesis, the conditional vector (§6.3). A silent aggregation would hide exactly the asymmetry this section exists to surface.
+
+**6. Degenerate case (exact reduction).** If `H` is absent, empty, or a singleton whose assignment is the observed state with `plausible = true`, then `H_plausible` is a singleton, robust admissibility is ordinary admissibility (§4.5), and `NetDelta_robust = NetDelta`. §4.10 then reduces **exactly** to §4.5: numbers, choice and declaration digest are those of `v0.9.1`. An implementation that declares no hypotheses is unchanged by this section.
+
+**No new hashed input.** A hypothesis is an alternative state, not an alternative ruler (§3.6): it assigns only entity-level DoF fields, and the graph-derived values of §3.4.1 are shared. The hypothesis set and its plausibility partition are **report context** (§3.4.1) and MUST NOT enter the digest. §4.10 changes **selection among measured numbers**, not the numbers themselves — the boundary `v0.8` drew — and the ruler digest is therefore unchanged by this revision.
 
 ---
 
@@ -517,6 +590,10 @@ For each entity in `S`:
 - `unknown_resources` — resources with `value = null` that were NOT resolved by any candidate; listed as `{ resource_id, used_estimated, has_fallback }`.
 - `measurement_time_spent` — total time spent on `measure`-type acts this cycle (relevant for `incomplete` decision reporting).
 - `incomplete` (bool, default `false`) — `true` iff a resolvable unknown (`t* > 0`, §4.7) was left unmeasured in **every** candidate, so the decision is declared incomplete instead of being presented as informed.
+- `hypotheses` — the declared hypothesis set of §3.6 as reported context: per hypothesis `{ id, plausible, basis }`. Absent or a singleton of the observed state when the state carries no hypothesis set; the body of `H` is provenance and MUST accompany the report, as the graph `G` does.
+- `plausible_hypotheses` — the identifiers of `H_plausible` (§4.10). A state with no declared set reports the observed assignment alone.
+- `robust_admissible` — the candidates admissible under **every** plausible hypothesis (§4.10.1). When it is empty, the fallback of §4.10.4 decided the cycle and the report MUST name it, together with the admissible support of each candidate.
+- `hypothesis_conflict` (bool, default `false`) — `true` iff §4.10.5's condition holds: the robust set is empty, or some candidate destroys a counted entity under some but not all plausible hypotheses. A conflict is reported, never silently aggregated away.
 
 ### 6.3 Per-option evaluation
 
@@ -535,6 +612,9 @@ For each candidate `o`:
 - `conversion_applied` — the deficits this option covers by exchange, with the observed rate used for each (empty when the option is payable directly). A reader must be able to see whether "affordable" was established by trade or by cash in hand (§4.8).
 - `discovers` — resources whose `value` becomes known after this option executes (a `measure`-type act; §3, §3.5).
 - `fallback_for` — resources for which `estimated` was used instead of `value`; MUST list the fallback option's `option_id` for each.
+- `conditional_vectors` — per hypothesis, `{ hypothesis_id, d1, d2, d3, net_delta }`, computed under that hypothesis's assignment (§4.10). Present whenever the state carries a hypothesis set; a singleton reduces to the `candidate_vector` above. This is the structure of the change across hypotheses, and it is reported rather than collapsed to an average: an asymmetry between hypotheses is a result, not an intermediate.
+- `admissible_under` — the identifiers of the plausible hypotheses under which this option is admissible (§4.10.1). A robustly admissible option lists all of them; an option barred under some hypothesis lists the hypotheses that bar it, so that a conflict is attributable per option and not only in aggregate.
+- `robust_net_delta` — `min_h NetDelta(o | h)` over `H_plausible` (§4.10.2): the key that replaced `net_delta` in selection.
 
 This report is the enforceable license condition: a deployment that cannot produce it is not a compliant DOF-Core implementation and must not be represented as one.
 
@@ -568,7 +648,9 @@ A software component is **DOF-Core conformant** iff it:
 20. Reduces amounts of different units to the group numeraire before summing them (§4.6), and reports, for every amount of the agent's means, its provenance — measured balance or asserted authority — with the measuring procedure (§4.8).
 21. Reports the digest of the full observation behind a reported subgraph, so that a selective report is attributable (§6.2).
 
-Cross-language ports (Python / Rust / Go / C++ under `patterns/`, or packaged SDKs) MUST produce **bit-for-bit equivalent** `total_system_dof`, `net_delta`, `selected`, and the per-lens term decomposition of §6.1 for the same inputs (within IEEE-754 tolerance for the logarithm). Equality of the total alone is **not** sufficient evidence: two opposite estimation errors can cancel and leave the total unchanged, so conformance is judged on the terms and on the declaration digest. Two implementations MUST also make the **same choice** for the same inputs — the same option, or `none` — and the choice MUST agree key by key on the candidate vector of §4.5. A state where one port selects an option and another prefers to stay is not a tolerance difference; it is a difference of rule.
+22. Evaluates the conditional quantities of §4.10 per hypothesis, applies **robust admissibility** (admissible under every plausible hypothesis), orders the survivors by `NetDelta_robust`, uses the fallback of §4.10.4 when the robust set is empty, and reports `hypotheses`, `plausible_hypotheses`, `robust_admissible`, `hypothesis_conflict` and the per-hypothesis `conditional_vectors` (§6.2/§6.3). It MUST accept the hypothesis set and its plausibility partition as **inputs**, MUST NOT generate a hypothesis or compute a plausibility, and MUST reduce **exactly** to §4.5 when the set is absent or a singleton (§4.10.6).
+
+Cross-language ports (Python / Rust / Go / C++ under `patterns/`, or packaged SDKs) MUST produce **bit-for-bit equivalent** `total_system_dof`, `net_delta`, `selected`, and the per-lens term decomposition of §6.1 for the same inputs (within IEEE-754 tolerance for the logarithm). Equality of the total alone is **not** sufficient evidence: two opposite estimation errors can cancel and leave the total unchanged, so conformance is judged on the terms and on the declaration digest. Two implementations MUST also make the **same choice** for the same inputs — the same option, or `none` — and the choice MUST agree key by key on the candidate vector of §4.5, and, when a hypothesis set is declared, key by key on the conditional vectors and the robust keys of §4.10. A state where one port selects an option and another prefers to stay is not a tolerance difference; it is a difference of rule.
 
 ---
 
@@ -608,7 +690,7 @@ The Generator's role is to produce `ActionOption` candidates. This spec does not
 
 ## 10. Versioning
 
-- This document is `DOF-SPEC` `v0.9.1`. The revision's normative text is **complete**; conformance evidence for the four reference ports is **pending**.
+- This document is `DOF-SPEC` `v0.10`. The revision's normative text is **complete**; conformance evidence for the four reference ports is **pending**.
 - `v0.3` — time is expressed in **microseconds**: `EntityState.time_to_collapse_mks`, `SystemStateMatrix.global_time_to_collapse_mks`, new `ActionOption.estimated_duration_mks`. The reactive-circuit threshold keeps its physical value: `FAST_PASS_THRESHOLD = 5000000.0` μs ⇔ `5.0` s of v0.2. `ActionOption.is_reversible` restored to the field table (it was dropped by the v0.2→v0.3 edit). §5 gains the **universal viability gate**: an option with `estimated_duration_mks > τ` is removed from the candidate set instead of being penalised.
 - `v0.4` — **the measurement layer becomes normative**: §3.4 (`psi` declaration reference and its canonical serialization), §4.1 (`DoF(e)` defined as the lens product), §4.6 (the three lenses, their normalization and the uniform degenerate-case guard), §4.7 (term level, unmeasured lenses, the ignorance penalty `u(t)` and its constants `α = 0.25`, `ρ = 0.9`, `U_MIN = ε^(1−ρ) ≈ 0.251`, `U_MAX = 0.5`), §6.1 (`lens_terms`, `binding_lens`), §6.2 (`psi_id`, `psi_digest`, declaration text, `removed_options`), §7 (items 7–9 and term-level equivalence). All four reference ports under `patterns/` implement this revision — conformance evidence below.
 - **`v0.4` text repair:** three places (`§3.4.1`, `§4.2`, `§4.5`) carried a cross-reference to a `§8.9` that does not exist in this document. They are replaced by an explicit **reserved** marker in §4.2 that states what implementations MUST do meanwhile, so the document no longer depends on anything outside itself. The normative behaviour of the reference ports is unchanged: recoverability was undefined before the repair and is undefined after it, but the rule is now decidable. Defining it — recovery horizon, admissible means, reachability verdicts over the world graph — is a versioned change and remains open.
@@ -638,5 +720,10 @@ The Generator's role is to produce `ActionOption` candidates. This spec does not
 - `v0.9.1` — **budget accounting + τ as consumable resource.** (1) Observable resources: §3.2a introduces `ResourceObservation` with metadata (`value` nullable, `unit`, `scale`, `source`, `last_measured_at`, `aging_time`, `estimated`, `estimation_source`). §3.3 adds `requires` and `discovers` to `ActionOption`. §3.5 introduces the `measure` act type. §4.8 extends the resource gate: null-resource handling, staleness, forbidden recursion. §6.2/§6.3 add audit fields. (2) **τ is no longer a rigid deadline**: §3.2b makes τ a `ResourceObservation` stored in the state's resource map. §4.8b introduces the viability gate: τ is consumed by `estimated_duration_mks`, may increase or decrease via `projected_tau_delta` (§3.3), and is re-estimated on every S' transition. Parallel actions consume τ by `max(d_i)`. Catastrophe state (τ < 0) allows only τ-increasing actions. Working time is a separate, purchasable resource used for parallel execution. Deliberately **not** in this revision: the `unknown_required` gate (separate discussion).
 - **Conformance evidence for `v0.9.1`:** pending — all four reference ports are to be extended with `ResourceObservation`, `measure`, the null-resource branch of §4.8, τ-as-resource in §3.2b/§4.8b, and the corresponding audit fields, then re-verified with a new fixture carrying at least one `value = null` resource with `estimated` and a fallback option, plus a τ-measurement scenario. `patterns/tools/verify_ports.sh` reports **VERIFIED** only when every `v0.8` run shows both digests; it re-runs the `v0.7` row alongside, so both releases must agree on the fingerprints. What the fixture asserts, beyond the numbers: `t1_compensate` — no collapse charge, `NetDelta = +0.104`, i.e. every gate of `v0.5`–`v0.7` passes it — is **refused**; its mirror `t1_mirror`, the same gain with a closure that is a price rather than a path loss, is **selected**; `t1_help`, which cuts a *non-critical* path, is refused just the same, which is the proof that `D2` is a bar and not a comparison; and `D3 ≤ D2` holds for every candidate, which is the proof that the third dimension cannot separate two candidates.
   - Portability observations of this release: **(1)** the same struct is spelled differently per port — `CandidateVector` is at file scope in the C++ and Rust cores, which use no `dof::` namespace for these types — and what enforces the right spelling is the port's own convention, not the neighbouring port's: copying a name across ports is the error, and the compiler is what catches it. **(2)** `NetDelta` for the same candidate can differ in the last bits across ports (Go `0.10415067982725361`, Python `0.10415067982726071`), which is exactly why the selection groups ties with `NET_DELTA_TOLERANCE`: without it two ports could resolve the same tie differently, and §7's equivalence of *choice* would be unsatisfiable. **(3)** a rule a release retires must be **marked as retired where it lives** — `apply_structural_gate` in all four ports — or the next reader cannot tell which path is live. **(4)** a harness must **print** the fingerprints it asserts against, in full: the first `v0.8` harnesses compared the digests correctly but printed only their first sixteen characters, and passed every check while `verify_ports.sh` — rightly — refused to call the release verified. An assertion the log cannot show is not evidence.
-- Normative constants (ε = 1e-6, `FAST_PASS_THRESHOLD = 5000000.0` μs, the ignorance constants `α = 0.25`, `ρ = 0.9`, `U_MIN = ε^(1−ρ) ≈ 0.251`, `U_MAX = 0.5`, and the frozen three-lens set with its canonical order) are part of the versioned contract. `v0.7` **removes** the `0.5` rigidity coefficient — a closure is priced by §4.4 from the counters, so no constant remains there — and adds to the contract the canonical serialization of graph-derived values (§3.4.3) and the closed three-valued verdict dictionary of §4.9. `v0.8` adds the **structural admissibility test** of §4.5 (`D1 = D2 = D3 = 0`), the definition of `critical(S)`, and `NET_DELTA_TOLERANCE = 1e-9` — the tolerance that decides whether two candidates with different `NetDelta` are tied, which must be the same number in every port or §7's equivalence of *choice* is unsatisfiable. A test decides *which* of the measured numbers may win, so two implementations that test differently select differently on identical numbers. It belongs to the versioned contract even though it is not a measurement input and does not enter the digest — the hash carries what determines the numbers, the admissibility test determines the choice among the measured numbers. Changing any of them requires a new minor/major spec version and a re-verification of all conforming ports.
+- `v0.10` — **conditional evaluation under declared hypotheses.** (1) §3.6 introduces the **hypothesis set** `H`: a Perception artifact, frozen on `S` (R7) like the world graph `G`, carrying mutually exclusive interpretations of the same state. A hypothesis assigns only entity-level DoF fields (`current_dof`, `dof_known`, `is_collapse_source`); the graph `G` and every graph-derived value of §3.4.1 are **shared**, so a hypothesis is an alternative **state**, not an alternative **ruler**. The core MUST NOT generate, merge, split, drop or reorder hypotheses, and MUST NOT compute the `plausible` flag: the plausibility partition is a declared input, external to the calculus, on the same footing as `M(S)` and `T_rec`. (2) §4.10 defines the **conditional quantities** (`TotalDoF_index(S|h)`, `NetDelta(o|h)`, `D1/D2/D3(o|h)`) and the **aggregation rule**: *robust admissibility* — an option is admissible iff admissible under **every** plausible hypothesis — with ordering by the **least-favourable** conditional delta `NetDelta_robust = min_h NetDelta(o|h)`. This is the **worst case, never an average**: a gain under one interpretation never compensates an irreversible collapse under another, which is Axiom 3 applied to **interpretations** rather than to entities. The operative test is the *existence* of a plausible interpretation under which the option collapses a counted entity, not the probability of that interpretation. (3) §4.10.4 is the **anti-paralysis guard**: an empty robust set falls back to maximal admissible support, then `NetDelta_robust`, then §4.5 keys 3–4 — the ordering is kept total for the same reason the collapse floor of §4.1 keeps it total. (4) §4.10.5 makes an **unresolved conflict reportable**: `hypothesis_conflict` is set when the robust set is empty or a candidate destroys under some but not all plausible hypotheses, and the per-hypothesis conditional vectors MUST be listed. (5) §4.10.6 gives the **exact reduction**: an absent or singleton `H` makes §4.10 identical to §4.5, with numbers, choice and digest those of `v0.9.1`. Deliberately **not** in this revision: any probabilistic aggregation (it would require a distribution the observation does not supply and would license the compensation Axiom 3 forbids) and any core-computed plausibility threshold (it would make the standard a classifier — Axiom 7).
+- **`Axiom 5` clarification (`v0.10`, `SKILL.md`).** The axiom's wording is disambiguated: "the greatest future DoF" is the greatest under the **least favourable** plausible outcome — the worst case, never a mean. This is a clarification of the words already present, not a new mechanism, and it is what §4.10.1–§4.10.2 formalise. `SKILL.md` is otherwise untouched.
+- **Text repair in `v0.10` (no change for implementations).** §4.9 was referenced as "§4.9" throughout the document but carried no heading; the heading `### 4.9 Reachability and the Right to be Counted` is restored. The section's text is untouched and no rule moves.
+- **No new hashed input in `v0.10`.** The hypothesis set and its plausibility partition are **report context** (§3.4.1), not hashed content. §4.10 changes selection among measured numbers, not the numbers themselves — the boundary `v0.8` drew (R6) — so the ruler digest `5126fd99…` is **unchanged**, and that is a **check**, not a hope: a digest that moved would mean this revision carried an input into the ruler, which is an error and not a version change.
+- **Conformance evidence for `v0.10`:** pending — all four reference ports are to be extended with the hypothesis artifact of §3.6, the conditional evaluation and robust admissibility of §4.10, the empty-robust-set fallback, and the `hypothesis_*` audit fields of §6.2/§6.3, then re-verified with a fixture carrying (a) a singleton `H` (must reproduce the `v0.9.1` numbers, choice and both digests), (b) two plausible hypotheses where an option gains under one and collapses a counted entity under the other (must be **refused** although `NetDelta(o|h₁) > 0`, with the mirror that collapses under neither **selected**), and (c) an empty robust set (the §4.10.4 fallback visible in the report). `patterns/tools/verify_ports.sh` reports **VERIFIED** only when the `v0.8` and `v0.9.1` rows remain green and the digest `5126fd99…` is unchanged.
+- Normative constants (ε = 1e-6, `FAST_PASS_THRESHOLD = 5000000.0` μs, the ignorance constants `α = 0.25`, `ρ = 0.9`, `U_MIN = ε^(1−ρ) ≈ 0.251`, `U_MAX = 0.5`, and the frozen three-lens set with its canonical order) are part of the versioned contract. `v0.7` **removes** the `0.5` rigidity coefficient — a closure is priced by §4.4 from the counters, so no constant remains there — and adds to the contract the canonical serialization of graph-derived values (§3.4.3) and the closed three-valued verdict dictionary of §4.9. `v0.8` adds the **structural admissibility test** of §4.5 (`D1 = D2 = D3 = 0`), the definition of `critical(S)`, and `NET_DELTA_TOLERANCE = 1e-9` — the tolerance that decides whether two candidates with different `NetDelta` are tied, which must be the same number in every port or §7's equivalence of *choice* is unsatisfiable. A test decides *which* of the measured numbers may win, so two implementations that test differently select differently on identical numbers. It belongs to the versioned contract even though it is not a measurement input and does not enter the digest — the hash carries what determines the numbers, the admissibility test determines the choice among the measured numbers. `v0.10` adds **no** normative constant: the worst-case rule is a rule of *choice*, not a measurement input, and the admissibility test it aggregates already lives in §4.5. Changing any of them requires a new minor/major spec version and a re-verification of all conforming ports.
 - SHA-256 of this file SHOULD be published alongside releases to detect silent modification (consistent with the de-centralized publication plan).

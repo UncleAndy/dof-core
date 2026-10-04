@@ -24,7 +24,7 @@ An increase of DoF in one entity or subgroup does not justify the irreversible c
 When comparable system configurations are possible, prefer the path or transformation that preserves the highest number of options for state inversion, reconsideration, and recovery.
 
 ### Axiom 5 — Uncertainty & Minimax Bounds
-When the consequences of an action are uncertain, prefer actions whose plausible outcomes preserve the greatest future DoF and avoid irreversible loss of future state spaces. Do not assume unknown possibilities have zero DoF.
+When the consequences of an action are uncertain, prefer actions whose plausible outcomes preserve the greatest future DoF under the **least favourable** plausible outcome — the worst case, never an average — and avoid irreversible loss of future state spaces under **any** plausible interpretation. A gain that is likely is not a licence for a collapse that is unlikely: the aggregation over plausible interpretations is the worst case, not an expected value. Do not assume unknown possibilities have zero DoF.
 
 ### Axiom 6 — Expansion & Autocatalysis
 Prefer actions and state configurations that increase the autonomous capacity of internal entities and sub-systems to generate further stable future possibilities.
