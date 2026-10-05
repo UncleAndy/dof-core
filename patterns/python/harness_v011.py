@@ -561,6 +561,37 @@ def test_report_shape():
           all("recoverability_by_hypothesis" in r for r in rep.entities))
     check("(d) the lens terms are reported per reading",
           all("lens_terms_by_hypothesis" in r for r in rep.entities))
+    # §6.2: the scalar that accompanies the map is admissible only when the report
+    # says whose value it is.
+    check("§6.2: the scalar total names the reading it belongs to",
+          getattr(rep, "total_system_dof_reading", "") == "$observed$",
+          str(getattr(rep, "total_system_dof_reading", None)))
+    check("§6.2: the declared set is reported with each reading's state in full",
+          len(rep.hypotheses) == 2
+          and all(h.get("state") for h in rep.hypotheses),
+          str([h.get("id") for h in rep.hypotheses]))
+    check("§6.2: the plausible readings are named",
+          set(rep.plausible_hypotheses) == {"$observed$", "h_low"},
+          str(rep.plausible_hypotheses))
+    check("§6.2: an undeclared coverage reads as partial",
+          rep.hypothesis_coverage == "partial", rep.hypothesis_coverage)
+    # §6.3: every option carries its whole vector per reading, and every reading is
+    # present — not only the one that happened to bar something.
+    check("§6.3: every option carries a conditional vector per reading",
+          all(set(r.get("conditional_vectors", {})) == {"$observed$", "h_low"}
+              for r in rep.options),
+          str([sorted(r.get("conditional_vectors", {})) for r in rep.options]))
+    check("§4.10.6/§6.3: the observed entry of every vector is the row's flat vector",
+          all(r["conditional_vectors"]["$observed$"]["d1"]
+              == r["candidate_vector"]["d1"]
+              and r["conditional_vectors"]["$observed$"]["d2"]
+              == r["candidate_vector"]["d2"]
+              and r["conditional_vectors"]["$observed$"]["d3"]
+              == r["candidate_vector"]["d3"]
+              and abs(r["conditional_vectors"]["$observed$"]["net_delta"]
+                      - r["candidate_vector"]["net_delta"]) < 1e-9
+              for r in rep.options),
+          "")
 
 
 # ---------------------------------------------------------------- ax

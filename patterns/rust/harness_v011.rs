@@ -840,6 +840,12 @@ pub fn run_harness_v011() -> Vec<String> {
 
     check11(
         &mut failures,
+        "§6.2: the scalar total names the reading it belongs to",
+        report.total_system_dof_reading == OBSERVED_HYPOTHESIS_ID,
+        &report.total_system_dof_reading,
+    );
+    check11(
+        &mut failures,
         "§6.2: the report names the declared set and the plausible readings",
         report.hypotheses.len() == 2 && report.plausible_hypotheses.len() == 2,
         &format!(

@@ -265,6 +265,11 @@ class DofReport(BaseModel):
     # `total_system_dof_by_hypothesis` below, and the scalar is present only so
     # that a consumer of a pre-`v0.11` report finds the field it knows.
     total_system_dof: float
+    # §6.2: the reading the scalar above belongs to. A scalar printed under a
+    # hypothesis set is admissible only when the report says **whose** value it is —
+    # an unlabelled number beside a map is read as a summary of the readings, which
+    # is the aggregate the standard refuses.
+    total_system_dof_reading: str = OBSERVED_HYPOTHESIS_ID
     context_switch_cost: float
     global_time_to_collapse_mks: float
     mode: str
@@ -1570,6 +1575,9 @@ class DOFCalculusCore:
         return DofReport(
             entities=entity_rows,
             total_system_dof=total,
+            # §6.2: and *whose* value that scalar is. The flat fields of §6.1–§6.3
+            # describe the observed reading, and the scalar is one of them.
+            total_system_dof_reading=OBSERVED_HYPOTHESIS_ID,
             context_switch_cost=current_state.context_switch_cost,
             global_time_to_collapse_mks=mirror_time_to_collapse(tau_of(current_state)),
             mode=mode,

@@ -418,6 +418,9 @@ func runHarnessV011() {
 			Selection:   &reportSelection,
 		})
 
+	check("§6.2: the scalar total names the reading it belongs to",
+		report.TotalSystemDoFReading == ObservedHypothesisID,
+		report.TotalSystemDoFReading)
 	check("§6.2: the report names the declared set and the plausible readings",
 		len(report.Hypotheses) == 2 && len(report.PlausibleHypotheses) == 2,
 		fmt.Sprintf("%d declared, %d plausible",

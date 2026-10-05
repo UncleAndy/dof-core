@@ -360,6 +360,12 @@ struct ReportV011 {
     std::optional<double> hypothesis_horizon_mks;
     bool hypothesis_conflict = false;
     std::map<std::string, double> total_system_dof_by_hypothesis;
+    // §6.2: the reading `base.total_system_dof` belongs to. A scalar beside a map is
+    // admissible only when the report says whose value it is — an unlabelled number
+    // is read as a summary of the readings, which is the aggregate the standard
+    // refuses. (`base` carries no such field: without a set the scalar *is* the
+    // total, and no label is needed to keep a reader from averaging.)
+    std::string total_system_dof_reading = std::string(kObservedHypothesisId);
     std::vector<std::string> robust_admissible;
     std::map<std::string, double> net_delta_robust;
     // §6.3: the per-option surface, keyed by option and then by reading.
@@ -411,6 +417,8 @@ inline ReportV011 report_on_set(const DOFCalculusCore& core, const SystemStateMa
         out.hypotheses[h.id] = h;
     }
     out.hypothesis_coverage = coverage_of(hset);
+    // §6.2: the scalar in `base` is the observed reading's, and the report says so.
+    out.total_system_dof_reading = std::string(kObservedHypothesisId);
     out.hypothesis_horizon_mks = hset != nullptr ? hset->horizon_mks : std::nullopt;
     for (const auto& h : readings) {
         out.plausible_hypotheses.push_back(h.id);

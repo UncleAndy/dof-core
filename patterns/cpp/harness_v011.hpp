@@ -574,6 +574,9 @@ inline int run_harness_v011() {
             flat_report.conditional_vectors.empty() ||
                 flat_report.plausible_hypotheses.size() == 1,
             std::to_string(flat_report.plausible_hypotheses.size()) + " plausible");
+    check11(failures, "§6.2: the scalar total names the reading it belongs to",
+            set_report.total_system_dof_reading == std::string(kObservedHypothesisId),
+            set_report.total_system_dof_reading);
     check11(failures, "§6.2: the report names the declared set and the plausible readings",
             set_report.hypotheses.size() == 2 && set_report.plausible_hypotheses.size() == 2,
             std::to_string(set_report.hypotheses.size()) + " declared, " +

@@ -510,8 +510,13 @@ type DofReport struct {
 	Hypotheses         []*Hypothesis `json:"hypotheses"`
 	HypothesisCoverage string   `json:"hypothesis_coverage"`
 	PlausibleHypotheses []string `json:"plausible_hypotheses"`
-	HypothesisHorizonMks *float64 `json:"hypothesis_horizon_mks"`
-	TotalSystemDoFByHypothesis map[string]float64 `json:"total_system_dof_by_hypothesis"`
+	HypothesisHorizonMks       *float64                                  `json:"hypothesis_horizon_mks"`
+	TotalSystemDoFByHypothesis map[string]float64                        `json:"total_system_dof_by_hypothesis"`
+	// §6.2: the reading `TotalSystemDoF` above belongs to. A scalar beside a map is
+	// admissible only when the report says whose value it is — an unlabelled number
+	// is read as a summary of the readings, which is the aggregate the standard
+	// refuses.
+	TotalSystemDoFReading string `json:"total_system_dof_reading"`
 	HypothesisConflict bool `json:"hypothesis_conflict"`
 	// §6.3: the whole decision payload, so a consumer can read the conditional
 	// vectors without walking every option row.
@@ -1671,6 +1676,9 @@ func (c *DOFCalculusCore) Report(currentState *SystemStateMatrix, options []*Act
 		report.Hypotheses = in.Readings
 	}
 	report.HypothesisCoverage = coverageOrDefault(in.Coverage)
+	// §6.2: and *whose* value the scalar `TotalSystemDoF` is. Every flat field of
+	// §6.1–§6.3 describes the observed reading; the scalar is one of them.
+	report.TotalSystemDoFReading = ObservedHypothesisID
 	report.PlausibleHypotheses = plausible
 	report.HypothesisHorizonMks = in.HorizonMks
 	report.TotalSystemDoFByHypothesis = totalsByH

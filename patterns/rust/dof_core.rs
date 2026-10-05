@@ -717,6 +717,11 @@ pub struct DofReport {
     pub plausible_hypotheses: Vec<String>,
     pub hypothesis_horizon_mks: Option<f64>,
     pub total_system_dof_by_hypothesis: BTreeMap<String, f64>,
+    /// §6.2: the reading `total_system_dof` above belongs to. A scalar beside a map
+    /// is admissible only when the report says whose value it is — an unlabelled
+    /// number is read as a summary of the readings, which is the aggregate the
+    /// standard refuses.
+    pub total_system_dof_reading: String,
     pub hypothesis_conflict: bool,
     /// §6.3: the whole decision payload, so a consumer can read the conditional
     /// vectors without walking every option row.
@@ -2104,6 +2109,9 @@ impl DofCalculusCore {
             plausible_hypotheses: plausible,
             hypothesis_horizon_mks: input.horizon_mks,
             total_system_dof_by_hypothesis: totals_by_h,
+            // §6.2: and *whose* value the scalar `total_system_dof` is. Every flat
+            // field of §6.1–§6.3 describes the observed reading; the scalar is one.
+            total_system_dof_reading: crate::hypothesis::OBSERVED_HYPOTHESIS_ID.to_string(),
             hypothesis_conflict: hyp_conflict,
             conditional_vectors: cond_vecs,
             admissible_under: adm_under,
