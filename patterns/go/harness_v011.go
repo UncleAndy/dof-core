@@ -296,7 +296,7 @@ func runHarnessV011() {
 	check("among robustly admissible candidates the greatest robust delta wins",
 		chosen != nil && chosen.OptionID == "strong", fmt.Sprintf("%v", chosen))
 	check("the payload lists the robust candidates",
-		len(selection.RobustCandidates) == 2, fmt.Sprintf("%v", selection.RobustCandidates))
+		len(selection.RobustAdmissible) == 2, fmt.Sprintf("%v", selection.RobustAdmissible))
 	check("the payload lists the robust key of every option",
 		len(selection.NetDeltaRobust) == 2)
 
@@ -306,7 +306,7 @@ func runHarnessV011() {
 	check("an empty robust candidate set yields no action at all",
 		chosenNone == nil, fmt.Sprintf("%v", chosenNone))
 	check("…and the payload still reports what it refused",
-		len(noneSelection.RobustCandidates) == 0 && noneSelection.HypothesisConflict)
+		len(noneSelection.RobustAdmissible) == 0 && noneSelection.HypothesisConflict)
 
 	// §4.5 key 3 under its robust reading: an option that closes nothing under the
 	// observed reading but closes something under another reading must NOT collect
@@ -384,6 +384,156 @@ func runHarnessV011() {
 		sameLostRows(rowsFlat, rowsPerH),
 		fmt.Sprintf("%d vs %d rows", len(rowsFlat), len(rowsPerH)))
 	fmt.Println()
+
+	// --- 7. §6.1/§6.2/§6.3: the report under a declared set -----------------
+	fmt.Println("=== 7. §6.1/§6.2/§6.3: the audit report is per hypothesis ===")
+	// The layer a port can compute but cannot publish is not landed: the
+	// conditional vectors existed in this port's core and in this harness, and
+	// nothing a consumer could call returned them. The report is the release's
+	// output, so it is asserted here on the **report** and not on the core.
+	//
+	// The fixture is section 5's: one entity read at 0.25 and at 0.30, so the two
+	// readings really differ, and an option that crosses into the zero under the
+	// second one only.
+	// The fixture: one entity read just above the zero under `h_bar` and well
+	// above it under the observed reading, so an option that drains it is barred
+	// under one reading and admissible under the other — the asymmetry §6.3 exists
+	// to report rather than average away. The readings really differ, so the index
+	// map has two different values.
+	reportCandidates := []*ActionOption{strong, sink}
+	reportSelected, reportSelection := core.SelectConditional(observed, reportCandidates,
+		barMembers, ctx, nil, nil, nil, nil)
+	var reportRuler *string
+	if decl != nil {
+		ruler := decl.RulerDigest()
+		reportRuler = &ruler
+	}
+	report := core.Report(observed, reportCandidates, reportSelected, "FAST_PASS",
+		ReportInput{
+			Ctx:         ctx,
+			Readings:    barMembers,
+			Declared:    barMembers,
+			Coverage:    "partial",
+			RulerDigest: reportRuler,
+			Selection:   &reportSelection,
+		})
+
+	check("§6.2: the report names the declared set and the plausible readings",
+		len(report.Hypotheses) == 2 && len(report.PlausibleHypotheses) == 2,
+		fmt.Sprintf("%d declared, %d plausible",
+			len(report.Hypotheses), len(report.PlausibleHypotheses)))
+	check("§6.2: an undeclared coverage is reported as `partial`",
+		report.HypothesisCoverage == "partial", report.HypothesisCoverage)
+	check("§6.2: the index under a set is a map, one entry per reading",
+		len(report.TotalSystemDoFByHypothesis) == 2 &&
+			report.TotalSystemDoFByHypothesis[ObservedHypothesisID] !=
+				report.TotalSystemDoFByHypothesis["h_bar"],
+		fmt.Sprintf("%v", report.TotalSystemDoFByHypothesis))
+
+	// Every candidate carries its whole vector per reading, computed from that
+	// reading's own triple — the report is the place §6.3 says an asymmetry is a
+	// result rather than an intermediate. The vectors are compared against the
+	// core's own per-reading computation, so a report that drifted from the
+	// decision it publishes is caught here and nowhere else.
+	vecOK := true
+	vecDetail := ""
+	for _, row := range report.Options {
+		if len(row.ConditionalVectors) != len(barMembers) {
+			vecOK = false
+			vecDetail = row.OptionID + ": " + fmt.Sprint(len(row.ConditionalVectors)) + " readings"
+			break
+		}
+		option := optionByID(reportCandidates, row.OptionID)
+		for _, h := range barMembers {
+			direct := core.ConditionalVectorOf(h.State, option, ctx, h.ID, nil, nil, nil, nil)
+			got := row.ConditionalVectors[h.ID]
+			if got.D1 != direct.D1 || got.D2 != direct.D2 || got.D3 != direct.D3 ||
+				math.Abs(got.NetDelta-direct.NetDelta) > netDeltaTolerance {
+				vecOK = false
+				vecDetail = row.OptionID + " under " + h.ID
+			}
+		}
+	}
+	check("§6.3: every candidate carries its conditional vector per reading", vecOK, vecDetail)
+
+	// The barring condition must be visible **under the reading that barred it**:
+	// a candidate that fails a condition of admissibility in one reading is barred
+	// there, and that is what §4.10.5's flag names.
+	barRow := findRow(report.Options, "sink")
+	check("§6.3: a candidate barred under one reading is visible as barred there",
+		barRow != nil && !barRow.AdmissibleUnder["h_bar"] &&
+			len(barRow.ConditionalVectors) == 2,
+		func() string {
+			if barRow == nil {
+				return "no row"
+			}
+			return fmt.Sprintf("%v", barRow.AdmissibleUnder)
+		}())
+	check("§6.3: the key that barred it is reported per reading",
+		barRow != nil && barRow.BarringKeyByHypothesis["h_bar"] != nil,
+		func() string {
+			if barRow == nil {
+				return "no row"
+			}
+			return fmt.Sprintf("%v", barRow.BarringKeyByHypothesis)
+		}())
+	check("§4.10.5: the split admissibility is surfaced as a conflict",
+		report.HypothesisConflict, fmt.Sprintf("%v", report.HypothesisConflict))
+
+	// §6.1: the reason a value is what it is belongs to a reading too — there is
+	// no shared `ψ` to print once the readings differ.
+	entRow := findEntityRow(report.Entities, entity)
+	check("§6.1: the lens terms and the verdict are reported per reading",
+		entRow != nil && len(entRow.LensTermsByHypothesis) == 2 &&
+			len(entRow.RecoverabilityByHypothesis) == 2,
+		func() string {
+			if entRow == nil {
+				return "no entity row"
+			}
+			return fmt.Sprintf("%d terms-rows, %d verdict-rows",
+				len(entRow.LensTermsByHypothesis), len(entRow.RecoverabilityByHypothesis))
+		}())
+
+	// §4.10.6: with no declared set the observed state alone is the answer, and
+	// the per-reading surface is **absent** rather than a one-entry map.
+	flatReport := core.Report(observed, reportCandidates, reportSelected, "FAST_PASS",
+		ReportInput{Ctx: ctx})
+	check("§4.10.6: without a declared set the flat report carries no per-reading surface",
+		len(flatReport.Hypotheses) == 0 && len(flatReport.TotalSystemDoFByHypothesis) == 0 &&
+			flatReport.Options[0].ConditionalVectors == nil,
+		fmt.Sprintf("%d hypotheses, %d totals",
+			len(flatReport.Hypotheses), len(flatReport.TotalSystemDoFByHypothesis)))
+	fmt.Println()
+}
+
+// findRow returns the option row with this id, or nil.
+func findRow(rows []OptionReportRow, optionID string) *OptionReportRow {
+	for i := range rows {
+		if rows[i].OptionID == optionID {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+// optionByID returns the candidate with this id, or nil.
+func optionByID(options []*ActionOption, optionID string) *ActionOption {
+	for _, option := range options {
+		if option.OptionID == optionID {
+			return option
+		}
+	}
+	return nil
+}
+
+// findEntityRow returns the entity row with this id, or nil.
+func findEntityRow(rows []EntityReportRow, entityID string) *EntityReportRow {
+	for i := range rows {
+		if rows[i].EntityID == entityID {
+			return &rows[i]
+		}
+	}
+	return nil
 }
 
 // sameLostRows compares two lost-path reports on the facts that carry meaning: the

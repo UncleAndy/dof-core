@@ -644,8 +644,8 @@ pub fn run_harness_v011() -> Vec<String> {
     check11(
         &mut failures,
         "the payload lists the robust candidates",
-        selection.robust_candidates.len() == 2,
-        &format!("{:?}", selection.robust_candidates),
+        selection.robust_admissible.len() == 2,
+        &format!("{:?}", selection.robust_admissible),
     );
     check11(
         &mut failures,
@@ -674,7 +674,7 @@ pub fn run_harness_v011() -> Vec<String> {
     check11(
         &mut failures,
         "…and the payload still reports what it refused",
-        none_selection.robust_candidates.is_empty() && none_selection.hypothesis_conflict,
+        none_selection.robust_admissible.is_empty() && none_selection.hypothesis_conflict,
         "",
     );
 
@@ -798,6 +798,186 @@ pub fn run_harness_v011() -> Vec<String> {
         "§3.3/§6.3: the per-hypothesis form agrees with the flat form on the same list",
         same_lost_rows(&rows_flat, &rows_per_h),
         &format!("{} vs {} rows", rows_flat.len(), rows_per_h.len()),
+    );
+    println!();
+
+    // --- 7. §6.1/§6.2/§6.3: the report under a declared set -----------------
+    println!("=== 7. §6.1/§6.2/§6.3: the audit report is per hypothesis ===");
+    // The layer a port can compute but cannot publish is not landed: the conditional
+    // vectors existed in this port's core and in this harness, and nothing a
+    // consumer could call returned them. The report is the release's output, so the
+    // layer is asserted here on the **report** and not on the core.
+    //
+    // The fixture is section 5's: the entity is read well above the zero under the
+    // observed reading and just above it under `h_bar`, so draining it is barred
+    // under one reading and admissible under the other — the asymmetry §6.3 exists
+    // to report rather than average away.
+    let report_candidates = vec![strong.clone(), sink.clone()];
+    let (report_selected, report_selection) = core.select_conditional(
+        &observed,
+        &report_candidates,
+        &bar_members,
+        &ctx,
+        None,
+        None,
+        None,
+        None,
+    );
+    let report = core.report(
+        &observed,
+        &report_candidates,
+        &report_selected,
+        "FAST_PASS",
+        crate::dof_core::ReportInput {
+            ctx: Some(&ctx),
+            readings: bar_members.clone(),
+            declared: bar_members.clone(),
+            coverage: "partial".to_string(),
+            selection: Some(&report_selection),
+            ..crate::dof_core::ReportInput::default()
+        },
+    );
+
+    check11(
+        &mut failures,
+        "§6.2: the report names the declared set and the plausible readings",
+        report.hypotheses.len() == 2 && report.plausible_hypotheses.len() == 2,
+        &format!(
+            "{} declared, {} plausible",
+            report.hypotheses.len(),
+            report.plausible_hypotheses.len()
+        ),
+    );
+    check11(
+        &mut failures,
+        "§6.2: an undeclared coverage is reported as `partial`",
+        report.hypothesis_coverage == "partial",
+        &report.hypothesis_coverage,
+    );
+    check11(
+        &mut failures,
+        "§6.2: the index under a set is a map, one entry per reading",
+        report.total_system_dof_by_hypothesis.len() == 2
+            && report.total_system_dof_by_hypothesis[OBSERVED_HYPOTHESIS_ID]
+                != report.total_system_dof_by_hypothesis["h_bar"],
+        &format!("{:?}", report.total_system_dof_by_hypothesis),
+    );
+
+    // Every candidate carries its whole vector per reading, and the vectors are
+    // compared against the core's own per-reading computation — a report that
+    // drifted from the decision it publishes is caught here and nowhere else.
+    let mut vec_ok = true;
+    let mut vec_detail = String::new();
+    for row in report.options.iter() {
+        if row.conditional_vectors.len() != bar_members.len() {
+            vec_ok = false;
+            vec_detail = format!("{}: {} readings", row.option_id, row.conditional_vectors.len());
+            break;
+        }
+        let option = report_candidates
+            .iter()
+            .find(|o| o.option_id == row.option_id)
+            .cloned()
+            .unwrap();
+        for h in bar_members.iter() {
+            let direct = core.conditional_vector_of(
+                &h.state,
+                &option,
+                &ctx,
+                &h.id,
+                None,
+                None,
+                None,
+                None,
+            );
+            let got = &row.conditional_vectors[&h.id];
+            if got.d1 != direct.d1
+                || got.d2 != direct.d2
+                || got.d3 != direct.d3
+                || (got.net_delta - direct.net_delta).abs() > DofCalculusCore::NET_DELTA_TOLERANCE
+            {
+                vec_ok = false;
+                vec_detail = format!("{} under {}", row.option_id, h.id);
+            }
+        }
+    }
+    check11(
+        &mut failures,
+        "§6.3: every candidate carries its conditional vector per reading",
+        vec_ok,
+        &vec_detail,
+    );
+
+    // The barring condition must be visible **under the reading that barred it**:
+    // a candidate that fails a condition of admissibility in one reading is barred
+    // there, and that is what §4.10.5's flag names.
+    let bar_row = report.options.iter().find(|r| r.option_id == "sink");
+    check11(
+        &mut failures,
+        "§6.3: a candidate barred under one reading is visible as barred there",
+        bar_row.map(|r| r.admissible_under.get("h_bar") == Some(&false)).unwrap_or(false)
+            && bar_row.map(|r| r.conditional_vectors.len() == 2).unwrap_or(false),
+        &format!("{:?}", bar_row.map(|r| r.admissible_under.clone())),
+    );
+    check11(
+        &mut failures,
+        "§6.3: the key that barred it is reported per reading",
+        bar_row
+            .map(|r| r.barring_key_by_hypothesis.get("h_bar").cloned().flatten().is_some())
+            .unwrap_or(false),
+        &format!("{:?}", bar_row.map(|r| r.barring_key_by_hypothesis.clone())),
+    );
+    check11(
+        &mut failures,
+        "§4.10.5: the split admissibility is surfaced as a conflict",
+        report.hypothesis_conflict,
+        &format!("{}", report.hypothesis_conflict),
+    );
+
+    // §6.1: the reason a value is what it is belongs to a reading too — there is no
+    // shared `ψ` to print once the readings differ.
+    let ent_row = report.entities.iter().find(|r| r.entity_id == entity);
+    check11(
+        &mut failures,
+        "§6.1: the lens terms and the verdict are reported per reading",
+        ent_row
+            .map(|r| r.lens_terms_by_hypothesis.len() == 2)
+            .unwrap_or(false)
+            && ent_row
+                .map(|r| r.recoverability_by_hypothesis.len() == 2)
+                .unwrap_or(false),
+        &format!(
+            "{:?}",
+            ent_row.map(|r| (
+                r.lens_terms_by_hypothesis.len(),
+                r.recoverability_by_hypothesis.len()
+            ))
+        ),
+    );
+
+    // §4.10.6: with no declared set the observed state alone is the answer, and the
+    // per-reading surface is **absent** rather than a one-entry map.
+    let flat_report = core.report(
+        &observed,
+        &report_candidates,
+        &report_selected,
+        "FAST_PASS",
+        crate::dof_core::ReportInput {
+            ctx: Some(&ctx),
+            ..crate::dof_core::ReportInput::default()
+        },
+    );
+    check11(
+        &mut failures,
+        "§4.10.6: without a declared set the flat report carries no per-reading surface",
+        flat_report.hypotheses.is_empty()
+            && flat_report.total_system_dof_by_hypothesis.is_empty()
+            && flat_report.options[0].conditional_vectors.is_empty(),
+        &format!(
+            "{} hypotheses, {} totals",
+            flat_report.hypotheses.len(),
+            flat_report.total_system_dof_by_hypothesis.len()
+        ),
     );
     println!();
 

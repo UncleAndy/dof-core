@@ -179,3 +179,113 @@ func (o *DOFOrchestrator) StepWithReport(raw map[string]interface{}) (*ActionOpt
 	})
 	return selected, report
 }
+
+// StepWithReportOnSet is §6.2/§6.3 (v0.11): the cycle run over a **declared
+// hypothesis set**. It is the entry point that makes the per-reading report
+// reachable in use — without it the conditional vectors exist in the core and in
+// the harness, and no consumer of this port can ever obtain them.
+//
+// The shape is §4.10's, and three points of it are decisions rather than
+// mechanics:
+//
+//   - the **candidate set is generated once**, from the observed state's τ and
+//     mode (§4.10.5), and is then shared: a reading never adds or removes an
+//     option;
+//   - the set is an **input** and is validated as such — a hypothesis whose
+//     stated DoF is not the product of its own counters, or whose collapse-source
+//     label differs from the observed one, is non-conformant input and is
+//     refused here rather than silently normalized (§3.6);
+//   - the selection is `SelectConditional`, so the same payload that decided the
+//     cycle is what the report publishes — a report that recomputed the vectors
+//     could show numbers no decision rested on.
+func (o *DOFOrchestrator) StepWithReportOnSet(raw map[string]interface{},
+	hset *HypothesisSet) (*ActionOption, *DofReport) {
+	state := o.mapper.PollEnvironment(raw)
+	ctx := o.mapper.LastObservation
+	tau := TauOf(state)
+	mode := o.modeFor(tau)
+	options, allRemoved := o.gates(state, o.generate(state, tau))
+
+	members := ResolvedMembers(state, hset)
+	if errs := ValidateSet(state, members); len(errs) > 0 {
+		errText := ""
+		for _, e := range errs {
+			errText += e + "; "
+		}
+		panic("non-conformant hypothesis set: " + errText)
+	}
+	readings := PlausibleMembers(members)
+
+	decl := o.mapper.LastDeclaration
+	var groups [][]string
+	var rates map[string]RateInfo
+	var weights map[string]float64
+	var cap *float64
+	if decl != nil {
+		groups = decl.Groups
+		rates = decl.Rates
+		weights = decl.Weights
+		cap = decl.MandateCap
+	}
+
+	selected, selection := o.core.SelectConditional(state, options, readings, ctx,
+		groups, rates, weights, cap)
+
+	measured := map[string]interface{}{}
+	for k, v := range state.Resources {
+		measured[k] = v
+	}
+	var numeraire interface{}
+	declWeights := map[string]interface{}{}
+	var mandateCap interface{}
+	if decl != nil {
+		if decl.Numeraire != nil {
+			numeraire = *decl.Numeraire
+		}
+		for k, v := range decl.Weights {
+			declWeights[k] = v
+		}
+		if decl.MandateCap != nil {
+			mandateCap = *decl.MandateCap
+		}
+	}
+	provenance := map[string]interface{}{
+		"source":      "measured balance (§4.8)",
+		"measured":    measured,
+		"numeraire":   numeraire,
+		"weights":     declWeights,
+		"mandate_cap": mandateCap,
+	}
+
+	in := ReportInput{
+		Declaration:     decl,
+		Removed:         allRemoved,
+		Groups:          groups,
+		Rates:           rates,
+		Weights:         weights,
+		Cap:             cap,
+		Ctx:             ctx,
+		MeansProvenance: provenance,
+		Readings:        readings,
+		Declared:        members,
+		Coverage:        CoverageOf(hset),
+		HorizonMks:      hsetHorizon(hset),
+		Selection:       &selection,
+	}
+	if decl != nil {
+		ruler := decl.RulerDigest()
+		in.RulerDigest = &ruler
+	}
+	report := o.core.Report(state, options, selected, mode, in)
+	return selected, report
+}
+
+// hsetHorizon names the declared analysis horizon, or nil when the set declares
+// none — §3.6 reports the horizon that bounds causal coverage, and an undeclared
+// horizon is reported as nothing rather than as a zero.
+func hsetHorizon(hset *HypothesisSet) *float64 {
+	if hset == nil {
+		return nil
+	}
+	return hset.HorizonMks
+}

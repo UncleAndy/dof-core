@@ -446,6 +446,14 @@ struct CandidateVector {
     double net_delta = 0.0;
     bool reversible = true;
     std::string option_id;
+    // §6.3: `viable` and `resources_ok` are **conditions of admissibility**, not
+    // annotations — a `false` in either bars the option exactly as a positive `d`
+    // does — so they are part of `candidate_vector` and not of the row's context.
+    // Both default to true, and the layer that evaluates the condition sets them:
+    // the financial one here (`plan_funding` is this header's own), the temporal one
+    // in the layer that reads τ.
+    bool viable = true;
+    bool resources_ok = true;
 };
 
 // One entity this option drops out of a `reachable` verdict, with the witness it
@@ -1178,6 +1186,10 @@ public:
         v.net_delta = net_delta(state, option, projected, current_index);
         v.reversible = is_reversible_for(option, hypothesis_id);
         v.option_id = option.option_id;
+        // §6.3: the financial condition of admissibility belongs to the vector. The
+        // temporal one is set by the layer that reads τ — this header has no
+        // visibility of it — and defaults to admissible, never to barred.
+        v.resources_ok = plan_funding(state, option).covered;
         return v;
     }
 
@@ -1192,7 +1204,15 @@ public:
     // The first dimension on which a candidate fails to beat staying put (§4.5,
     // §6.2). Empty means nothing barred it: it outranks the baseline, or ties it
     // while staying reversible.
+    //
+    // The executability conditions come first, in the order §4.8b evaluates them —
+    // temporal (`viable`), then structural, then financial (`resources_ok`). The
+    // order is unobservable to the result, so any of the keys reports the same bar;
+    // leaving them out would let an option that cannot be executed be reported as
+    // barred for a structural reason it never reached.
     static std::optional<std::string> barring_key(const CandidateVector& v) {
+        if (!v.viable) return std::string("viable");
+        if (!v.resources_ok) return std::string("resources_ok");
         if (v.d1 > 0) return std::string("d1");
         if (v.d2 > 0) return std::string("d2");
         if (v.d3 > 0) return std::string("d3");

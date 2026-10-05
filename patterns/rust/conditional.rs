@@ -84,7 +84,7 @@ pub struct ConditionalSelection {
     pub conditional_vectors: BTreeMap<String, BTreeMap<String, ConditionalVector>>,
     pub admissible_under: BTreeMap<String, BTreeMap<String, bool>>,
     pub hypothesis_conflict: bool,
-    pub robust_candidates: Vec<String>,
+    pub robust_admissible: Vec<String>,
     pub net_delta_robust: BTreeMap<String, f64>,
 }
 
@@ -334,7 +334,7 @@ impl DofCalculusCore {
             conditional_vectors: per_h_all.clone(),
             admissible_under: BTreeMap::new(),
             hypothesis_conflict: self.hypothesis_conflict(&per_h_all, members, &robust_ids),
-            robust_candidates: robust_ids.clone(),
+            robust_admissible: robust_ids.clone(),
             net_delta_robust: BTreeMap::new(),
         };
         for option in options.iter() {

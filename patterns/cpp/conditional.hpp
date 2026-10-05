@@ -82,7 +82,7 @@ struct ConditionalSelection {
     std::map<std::string, std::map<std::string, ConditionalVector>> conditional_vectors;
     std::map<std::string, std::map<std::string, bool>> admissible_under;
     bool hypothesis_conflict = false;
-    std::vector<std::string> robust_candidates;
+    std::vector<std::string> robust_admissible;
     std::map<std::string, double> net_delta_robust;
 };
 
@@ -275,7 +275,7 @@ inline std::pair<std::optional<ActionOption>, ConditionalSelection> select_condi
     ConditionalSelection selection;
     selection.conditional_vectors = per_h_all;
     selection.hypothesis_conflict = hypothesis_conflict(per_h_all, members, robust_ids);
-    selection.robust_candidates = robust_ids;
+    selection.robust_admissible = robust_ids;
     for (const auto& option : options) {
         static const std::map<std::string, ConditionalVector> kEmpty;
         auto it = per_h_all.find(option.option_id);
@@ -336,6 +336,119 @@ inline std::pair<std::optional<ActionOption>, ConditionalSelection> select_condi
 // An absent claim reads as `"partial"` — the cautious default — and is never
 // inferred to be complete.
 inline std::string hypothesis_coverage(const HypothesisSet* hset) { return coverage_of(hset); }
+
+// ---------------------------------------------------------------------------
+// §6.2/§6.3 (v0.11): the audit report over a declared hypothesis set.
+//
+// `dof_core.hpp`'s `DofReport` is complete for **one** reading, and the per-reading
+// surface cannot live there: this header is an overlay over the core — it depends on
+// it, never the other way round — so the types the surface needs (`Hypothesis`, the
+// conditional vectors) are invisible to the core. The v0.11 report is therefore the
+// core's flat report **plus** the same facts per reading, and it is the object a
+// v0.11 consumer reads.
+//
+// The observed-state reduction (§4.10.6) is the same call with `hset == nullptr`:
+// one reading, one entry in every map, and the flat part unchanged.
+struct ReportV011 {
+    // §6.1–§6.3 flat: the observed reading's values, exactly as `report()` produces.
+    DofReport base;
+    // §6.2: the declared set as provenance — each reading with its `state` in full,
+    // because that state is what the conditional quantities were read from.
+    std::map<std::string, Hypothesis> hypotheses;
+    std::vector<std::string> plausible_hypotheses;
+    std::string hypothesis_coverage = "partial";
+    std::optional<double> hypothesis_horizon_mks;
+    bool hypothesis_conflict = false;
+    std::map<std::string, double> total_system_dof_by_hypothesis;
+    std::vector<std::string> robust_admissible;
+    std::map<std::string, double> net_delta_robust;
+    // §6.3: the per-option surface, keyed by option and then by reading.
+    std::map<std::string, std::map<std::string, ConditionalVector>> conditional_vectors;
+    std::map<std::string, std::map<std::string, bool>> admissible_under;
+    std::map<std::string, std::map<std::string, std::optional<std::string>>> barring_key_by_hypothesis;
+    // §6.1: the reason a value is what it is belongs to a reading too — there is no
+    // shared `ψ` to print once the readings differ.
+    std::map<std::string, std::map<std::string, std::vector<LensTerm>>> lens_terms_by_hypothesis;
+    std::map<std::string, std::map<std::string, std::optional<std::string>>> binding_lens_by_hypothesis;
+    std::map<std::string, std::map<std::string, RecoverabilityRow>> recoverability_by_hypothesis;
+};
+
+// §4.9: the same observation read under **this** reading's DoF. The graph, the
+// paths, `M(S)` and `T_rec(X)` stay shared (§3.6); only the measured content moves.
+inline ObservationContext reading_context(const ObservationContext& ctx,
+                                         const Hypothesis& hypothesis) {
+    std::unordered_map<std::string, double> dofs;
+    for (const auto& kv : hypothesis.state.entities) {
+        dofs[kv.first] = kv.second.current_dof;
+    }
+    return ctx.with_dof(dofs);
+}
+
+// The full report of one cycle over a declared set. The conditional pass is the same
+// one the decision itself used (`select_conditional`) — not a second computation that
+// could drift from what was published.
+inline ReportV011 report_on_set(const DOFCalculusCore& core, const SystemStateMatrix& state,
+                                const std::vector<ActionOption>& options,
+                                const std::string& mode, const HypothesisSet* hset,
+                                const ReportInput& input = ReportInput{}) {
+    std::vector<Hypothesis> declared = resolved_members(state, hset);
+    std::vector<Hypothesis> readings = plausible_members(declared);
+    const ObservationContext* ctx = input.ctx;
+    ReportV011 out;
+    if (ctx != nullptr) {
+        auto choice = select_conditional(core, state, options, readings, *ctx, input.groups,
+                                         input.rates, input.weights, input.cap);
+        out.base = core.report(state, options, choice.first, mode, input);
+        out.conditional_vectors = choice.second.conditional_vectors;
+        out.admissible_under = choice.second.admissible_under;
+        out.net_delta_robust = choice.second.net_delta_robust;
+        out.robust_admissible = choice.second.robust_admissible;
+        out.hypothesis_conflict = choice.second.hypothesis_conflict;
+    } else {
+        out.base = core.report(state, options, std::nullopt, mode, input);
+    }
+    for (const auto& h : declared) {
+        out.hypotheses[h.id] = h;
+    }
+    out.hypothesis_coverage = coverage_of(hset);
+    out.hypothesis_horizon_mks = hset != nullptr ? hset->horizon_mks : std::nullopt;
+    for (const auto& h : readings) {
+        out.plausible_hypotheses.push_back(h.id);
+        if (ctx == nullptr) continue;
+        const ObservationContext h_ctx = reading_context(*ctx, h);
+        out.total_system_dof_by_hypothesis[h.id] =
+            core.calculate_system_dof(h.state, nullptr, &h_ctx);
+        for (const auto& kv : h.state.entities) {
+            if (kv.second.measurement.has_value()) {
+                out.lens_terms_by_hypothesis[kv.first][h.id] = kv.second.measurement->terms;
+                out.binding_lens_by_hypothesis[kv.first][h.id] =
+                    kv.second.measurement->binding_lens;
+            }
+            out.recoverability_by_hypothesis[kv.first][h.id] =
+                core.recoverability_row(kv.first, &h_ctx);
+        }
+    }
+    // §6.3: the key that barred a candidate is read **under the reading that barred
+    // it** — a candidate barred for executability must not be reported as barred for
+    // a structural reason it never reached.
+    for (const auto& kv : out.conditional_vectors) {
+        for (const auto& per_h : kv.second) {
+            const ConditionalVector& v = per_h.second;
+            CandidateVector flat;
+            flat.d1 = v.d1;
+            flat.d2 = v.d2;
+            flat.d3 = v.d3;
+            flat.net_delta = v.net_delta;
+            flat.reversible = v.reversible;
+            flat.option_id = v.option_id;
+            flat.viable = v.viable;
+            flat.resources_ok = v.resources_ok;
+            out.barring_key_by_hypothesis[kv.first][per_h.first] =
+                DOFCalculusCore::barring_key(flat);
+        }
+    }
+    return out;
+}
 
 }  // namespace dof
 

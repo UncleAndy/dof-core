@@ -33,8 +33,6 @@ import "math"
 type ConditionalVector struct {
 	CandidateVector
 	HypothesisID string `json:"hypothesis_id"`
-	Viable       bool   `json:"viable"`
-	ResourcesOK  bool   `json:"resources_ok"`
 }
 
 // ConditionalSelection is §6.3's decision payload: everything the report needs
@@ -43,7 +41,7 @@ type ConditionalSelection struct {
 	ConditionalVectors map[string]map[string]ConditionalVector `json:"conditional_vectors"`
 	AdmissibleUnder    map[string]map[string]bool              `json:"admissible_under"`
 	HypothesisConflict bool                                    `json:"hypothesis_conflict"`
-	RobustCandidates   []string                                `json:"robust_candidates"`
+	RobustAdmissible   []string                                `json:"robust_admissible"`
 	NetDeltaRobust     map[string]float64                      `json:"net_delta_robust"`
 }
 
@@ -243,7 +241,7 @@ func (c *DOFCalculusCore) SelectConditional(state *SystemStateMatrix,
 		ConditionalVectors: perHAll,
 		AdmissibleUnder:    map[string]map[string]bool{},
 		HypothesisConflict: c.HypothesisConflict(perHAll, members, robust),
-		RobustCandidates:   []string{},
+		RobustAdmissible:   []string{},
 		NetDeltaRobust:     map[string]float64{},
 	}
 	for _, option := range options {
@@ -253,7 +251,7 @@ func (c *DOFCalculusCore) SelectConditional(state *SystemStateMatrix,
 			c.LeastFavourable(perHAll[option.OptionID], members)
 	}
 	for _, option := range robust {
-		selection.RobustCandidates = append(selection.RobustCandidates, option.OptionID)
+		selection.RobustAdmissible = append(selection.RobustAdmissible, option.OptionID)
 	}
 	if len(robust) == 0 {
 		return nil, selection

@@ -9,6 +9,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::conditional::{ConditionalSelection, ConditionalVector};
+use crate::hypothesis::Hypothesis;
 use crate::measurement::{
     psi_var, EntityMeasurement, LensTerm, MeasurementDeclaration, MandateValue, PsiReference, Rate,
 };
@@ -535,6 +537,15 @@ pub struct EntityReportRow {
     pub derivation: Option<crate::measurement::DerivationInfo>,
     /// §6.1 (v0.7): the recoverability verdict and its witness.
     pub recoverability: RecoverabilityRow,
+    // §6.1 (v0.11): the same three facts **per reading**. The lens terms and the
+    // binding channel belong to a measurement, so under a declared set there is no
+    // shared `ψ` to print and no single verdict to report: the channel that binds
+    // and the reading under which the entity can be revived are results, not
+    // noise. Empty when the cycle ran on the observed state alone, where the flat
+    // fields are the whole answer.
+    pub lens_terms_by_hypothesis: BTreeMap<String, Vec<LensTerm>>,
+    pub binding_lens_by_hypothesis: BTreeMap<String, Option<String>>,
+    pub recoverability_by_hypothesis: BTreeMap<String, RecoverabilityRow>,
 }
 
 /// A deficit covered by an exchange (§4.8): the audit line that shows the price
@@ -591,6 +602,11 @@ pub struct CandidateVector {
     pub net_delta: f64,
     pub reversible: bool,
     pub option_id: String,
+    /// §6.3: `viable` and `resources_ok` are **conditions of admissibility**, not
+    /// annotations — a `false` in either bars the option exactly as a positive `d`
+    /// does — so they are part of `candidate_vector`, not of the row's context.
+    pub viable: bool,
+    pub resources_ok: bool,
 }
 
 /// One entity this option drops out of a `reachable` verdict, with the witness it
@@ -630,6 +646,26 @@ pub struct OptionReportRow {
     pub candidate_vector: CandidateVector,
     pub barring_key: Option<String>,
     pub lost_paths: Vec<LostPathEntry>,
+    // §6.3 (v0.11): the v0.11 report surface. The flat fields above describe the
+    // **observed** reading (`is_reversible`, `closed`, `closure_share`); the
+    // per-reading values live here, and the two are not interchangeable — a report
+    // carrying only the flat field presents the ordering key's input as a constant
+    // while the key ranges over the set.
+    //
+    // `conditional_vectors` is the structure of the change across readings — an
+    // asymmetry between hypotheses is a result, not an intermediate — and every
+    // entry is computed from that reading's own triple: the state `S | h`, the
+    // projection `projection[h]` and the closures `closure[h]` (§6.3).
+    pub conditional_vectors: BTreeMap<String, ConditionalVector>,
+    pub admissible_under: BTreeMap<String, bool>,
+    pub barring_key_by_hypothesis: BTreeMap<String, Option<String>>,
+    pub net_delta_robust: Option<f64>,
+    pub robust_is_reversible: bool,
+    pub projection_form: String,
+    pub closure_form: String,
+    pub viability: bool,
+    pub resources_ok: bool,
+    pub forms_consistent: bool,
 }
 
 /// Full Proof-of-Implementation audit (DOF-SPEC §6).
@@ -667,6 +703,27 @@ pub struct DofReport {
     /// any candidate beat it. A refusal to act is a decision and must be audible.
     pub baseline: CandidateVector,
     pub no_candidate_better: bool,
+    // --- §6.2 (v0.11): the report is **per hypothesis** ----------------------
+    //
+    // There is no single total under a hypothesis set and the report MUST NOT
+    // present one: `total_system_dof` above is the **observed reading's** value —
+    // the reading the flat fields of §6.3 also describe — and this map is the
+    // state's index per reading. A scalar here would be the average the standard
+    // refuses (§2), and it would contradict the per-entity contributions and the
+    // conditional vectors reported beside it.
+    pub psi_ruler_digest: Option<String>,
+    pub hypotheses: Vec<Hypothesis>,
+    pub hypothesis_coverage: String,
+    pub plausible_hypotheses: Vec<String>,
+    pub hypothesis_horizon_mks: Option<f64>,
+    pub total_system_dof_by_hypothesis: BTreeMap<String, f64>,
+    pub hypothesis_conflict: bool,
+    /// §6.3: the whole decision payload, so a consumer can read the conditional
+    /// vectors without walking every option row.
+    pub conditional_vectors: BTreeMap<String, BTreeMap<String, ConditionalVector>>,
+    pub admissible_under: BTreeMap<String, BTreeMap<String, bool>>,
+    pub net_delta_robust: BTreeMap<String, f64>,
+    pub robust_admissible: Vec<String>,
 }
 
 /// What a report needs beyond the state, the candidates and the selection. It keeps
@@ -682,6 +739,20 @@ pub struct ReportInput<'a> {
     pub cap: Option<f64>,
     pub ctx: Option<&'a ObservationContext>,
     pub means_provenance: BTreeMap<String, MandateValue>,
+    // §6.2/§6.3 (v0.11): the reading context. `readings` is the set the
+    // conditional quantities were computed over — **`H_plausible`**, the reduction
+    // of §4.10.6 being the observed-state singleton — while `declared` is the whole
+    // declared set, which is what `hypotheses` reports: a member excluded by the
+    // plausibility partition is still part of the artifact, and §6.2 asks for the
+    // set *and* for the plausible subset separately. `selection` is the §4.10
+    // decision payload, so the report shows every candidate's conditional vector
+    // instead of one reading's flat fields.
+    pub readings: Vec<Hypothesis>,
+    pub declared: Vec<Hypothesis>,
+    pub coverage: String,
+    pub horizon_mks: Option<f64>,
+    pub ruler_digest: Option<String>,
+    pub selection: Option<&'a ConditionalSelection>,
 }
 
 pub struct DofCalculusCore {
@@ -1320,6 +1391,13 @@ impl DofCalculusCore {
             net_delta: self.net_delta(state, option, projected, current_index),
             reversible: option.is_reversible_for(hypothesis_id),
             option_id: option.option_id.clone(),
+            // §6.3: executability is a condition of admissibility, so it belongs to
+            // the vector. `conditional.rs` carries the per-reading values; these are
+            // the observed reading's, which is what a flat report row shows.
+            viable: self.viability(state, option).viable,
+            resources_ok: self
+                .plan_funding(state, option, None, None, None, None)
+                .covered,
         }
     }
 
@@ -1340,7 +1418,9 @@ impl DofCalculusCore {
         )
     }
 
-    /// Staying put: the zero vector, `NetDelta = 0` by definition.
+    /// Staying put: the zero vector, `NetDelta = 0` by definition. Admissible by
+    /// construction — an option that cannot be executed is never better than doing
+    /// nothing — so both executability conditions hold (§6.2, §6.3).
     pub fn baseline_vector() -> CandidateVector {
         CandidateVector {
             d1: 0,
@@ -1349,6 +1429,8 @@ impl DofCalculusCore {
             net_delta: 0.0,
             reversible: true,
             option_id: String::new(),
+            viable: true,
+            resources_ok: true,
         }
     }
 
@@ -1356,6 +1438,18 @@ impl DofCalculusCore {
     /// §6.2). `None` means nothing barred it: it outranks the baseline, or ties it
     /// while staying reversible.
     pub fn barring_key(vector: &CandidateVector) -> Option<String> {
+        // The executability conditions come first, in the order §4.8b evaluates
+        // them — temporal (`viable`), then structural, then financial
+        // (`resources_ok`). The order is unobservable to the result, so any of the
+        // keys reports the same bar; leaving them out would let an option that
+        // cannot be executed be reported as barred for a structural reason it never
+        // reached.
+        if !vector.viable {
+            return Some("viable".to_string());
+        }
+        if !vector.resources_ok {
+            return Some("resources_ok".to_string());
+        }
         if vector.d1 > 0 {
             return Some("d1".to_string());
         }
@@ -1736,6 +1830,25 @@ impl DofCalculusCore {
         input: ReportInput,
     ) -> DofReport {
         let ctx = input.ctx;
+        // §6.2/§6.3 (v0.11): the report is **per hypothesis**. `input.readings` is
+        // the set the conditional quantities were computed over — `H_plausible`, the
+        // reduction of §4.10.6 being the observed-state singleton — and reading a
+        // hypothesis means reading *its* state under the same observation, whose
+        // §4.9 verdicts are that reading's. The graph and the ruler stay shared;
+        // only the measured content moves, so nothing here re-derives an
+        // observation.
+        let ctx_of = |h: &Hypothesis| -> Option<ObservationContext> {
+            match ctx {
+                Some(c) => {
+                    let mut dofs: HashMap<String, f64> = HashMap::new();
+                    for (eid, e) in &h.state.entities {
+                        dofs.insert(eid.clone(), e.current_dof);
+                    }
+                    Some(c.with_dof(dofs))
+                }
+                None => None,
+            }
+        };
         let mut entity_rows: Vec<EntityReportRow> = Vec::new();
         for (_eid, ent) in &current_state.entities {
             let included = self.is_included(ent, ctx, Some(current_state));
@@ -1754,7 +1867,7 @@ impl DofCalculusCore {
                 ),
                 None => (Vec::new(), None, false, Vec::new(), None),
             };
-            entity_rows.push(EntityReportRow {
+            let mut row = EntityReportRow {
                 entity_id: ent.entity_id.clone(),
                 is_collapse_source: ent.is_collapse_source,
                 included_in_sum: included,
@@ -1768,7 +1881,32 @@ impl DofCalculusCore {
                 derivation,
                 // §6.1 (v0.7): the verdict, its witness and the completeness behind it.
                 recoverability: self.recoverability_row(&ent.entity_id, ctx),
-            });
+                // §6.1 (v0.11): the same facts per reading, filled below.
+                lens_terms_by_hypothesis: BTreeMap::new(),
+                binding_lens_by_hypothesis: BTreeMap::new(),
+                recoverability_by_hypothesis: BTreeMap::new(),
+            };
+            // §6.1 (v0.11): the reason a value is what it is belongs to a reading
+            // too — there is no shared `ψ` to print once the readings differ. Empty
+            // when the cycle ran on the observed state alone, where the flat fields
+            // are the whole answer and a one-entry map would claim a comparison
+            // nobody asked for.
+            if input.readings.len() > 1 {
+                for h in &input.readings {
+                    if let Some(e) = h.state.entities.get(&ent.entity_id) {
+                        if let Some(m) = &e.measurement {
+                            row.lens_terms_by_hypothesis.insert(h.id.clone(), m.terms.clone());
+                            row.binding_lens_by_hypothesis
+                                .insert(h.id.clone(), m.binding_lens.clone());
+                        }
+                    }
+                    row.recoverability_by_hypothesis.insert(
+                        h.id.clone(),
+                        self.recoverability_row(&ent.entity_id, ctx_of(h).as_ref()),
+                    );
+                }
+            }
+            entity_rows.push(row);
         }
         let total = self.calculate_system_dof(current_state, None, ctx);
 
@@ -1815,7 +1953,7 @@ impl DofCalculusCore {
                 input.weights,
                 input.cap,
             );
-            option_rows.push(OptionReportRow {
+            let mut row = OptionReportRow {
                 option_id: option.option_id.clone(),
                 is_reversible: self.is_reversible(option),
                 projected_dof: projected,
@@ -1838,7 +1976,59 @@ impl DofCalculusCore {
                 candidate_vector: vector.clone(),
                 barring_key: Self::barring_key(&vector),
                 lost_paths: self.lost_paths(current_state, option, ctx),
-            });
+                // §6.3 (v0.11): the per-reading surface, filled below.
+                conditional_vectors: BTreeMap::new(),
+                admissible_under: BTreeMap::new(),
+                barring_key_by_hypothesis: BTreeMap::new(),
+                net_delta_robust: None,
+                robust_is_reversible: false,
+                projection_form: option.projection_form().to_string(),
+                closure_form: option.closure_form().to_string(),
+                viability: self.viability(current_state, option).viable,
+                resources_ok: plan.covered,
+                forms_consistent: option.forms_consistent().is_empty(),
+            };
+            // §6.3 (v0.11): the per-reading values come from the payload the
+            // decision itself used — never from a second computation, or the report
+            // could show a vector no reading produced. The flat fields above stay
+            // the observed reading's, which is what §6.3 says they are.
+            if let Some(sel) = input.selection {
+                row.conditional_vectors = sel
+                    .conditional_vectors
+                    .get(&option.option_id)
+                    .cloned()
+                    .unwrap_or_default();
+                row.admissible_under = sel
+                    .admissible_under
+                    .get(&option.option_id)
+                    .cloned()
+                    .unwrap_or_default();
+                row.net_delta_robust = sel.net_delta_robust.get(&option.option_id).copied();
+                row.robust_is_reversible = self.robust_reversible(option, &input.readings);
+                let mut first_bar = row.barring_key.clone();
+                for (hid, vec) in row.conditional_vectors.iter() {
+                    let flat = CandidateVector {
+                        d1: vec.d1,
+                        d2: vec.d2,
+                        d3: vec.d3,
+                        net_delta: vec.net_delta,
+                        reversible: vec.reversible,
+                        option_id: vec.option_id.clone(),
+                        // The barring key must see the executability conditions of
+                        // the reading it is asked about, or a barred-for-execution
+                        // candidate would look barred for a structural reason.
+                        viable: vec.viable,
+                        resources_ok: vec.resources_ok,
+                    };
+                    let key = Self::barring_key(&flat);
+                    if first_bar.is_none() && key.is_some() {
+                        first_bar = key.clone();
+                    }
+                    row.barring_key_by_hypothesis.insert(hid.clone(), key);
+                }
+                row.barring_key = first_bar;
+            }
+            option_rows.push(row);
         }
         let (psi_id, psi_digest, declaration_text) = match input.declaration {
             Some(d) => (d.psi_id.clone(), d.digest(), d.canonical_text()),
@@ -1850,6 +2040,39 @@ impl DofCalculusCore {
         let observation_digest = match ctx {
             Some(c) if !c.observation_digest.is_empty() => Some(c.observation_digest.clone()),
             _ => None,
+        };
+        // §6.2 (v0.11): the declared set as report context, and the index **per
+        // reading**. `total_system_dof` above stays the observed reading's value;
+        // this map is what a reader of a per-reading report must use, and no single
+        // number is presented as the state's total.
+        let mut totals_by_h: BTreeMap<String, f64> = BTreeMap::new();
+        let mut plausible: Vec<String> = Vec::new();
+        for h in &input.readings {
+            totals_by_h.insert(h.id.clone(), self.calculate_system_dof(&h.state, None, ctx_of(h).as_ref()));
+            if h.plausible {
+                plausible.push(h.id.clone());
+            }
+        }
+        let hypotheses = if input.declared.is_empty() {
+            input.readings.clone()
+        } else {
+            input.declared.clone()
+        };
+        let (hyp_conflict, cond_vecs, adm_under, net_robust, robust_ids) = match input.selection {
+            Some(sel) => (
+                sel.hypothesis_conflict,
+                sel.conditional_vectors.clone(),
+                sel.admissible_under.clone(),
+                sel.net_delta_robust.clone(),
+                sel.robust_admissible.clone(),
+            ),
+            None => (
+                false,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                Vec::new(),
+            ),
         };
         DofReport {
             entities: entity_rows,
@@ -1871,6 +2094,21 @@ impl DofCalculusCore {
             // any of them beat it. A silent "no action" is an omission.
             baseline: Self::baseline_vector(),
             no_candidate_better: !options.is_empty() && selected.is_none(),
+            psi_ruler_digest: input.ruler_digest,
+            hypotheses,
+            hypothesis_coverage: if input.coverage.is_empty() {
+                "partial".to_string()
+            } else {
+                input.coverage
+            },
+            plausible_hypotheses: plausible,
+            hypothesis_horizon_mks: input.horizon_mks,
+            total_system_dof_by_hypothesis: totals_by_h,
+            hypothesis_conflict: hyp_conflict,
+            conditional_vectors: cond_vecs,
+            admissible_under: adm_under,
+            net_delta_robust: net_robust,
+            robust_admissible: robust_ids,
         }
     }
 }

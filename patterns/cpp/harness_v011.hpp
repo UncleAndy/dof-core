@@ -447,8 +447,8 @@ inline int run_harness_v011() {
             chosen.first.has_value() && chosen.first->option_id == "strong",
             chosen.first ? chosen.first->option_id : std::string("none"));
     check11(failures, "the payload lists the robust candidates",
-            chosen.second.robust_candidates.size() == 2,
-            std::to_string(chosen.second.robust_candidates.size()));
+            chosen.second.robust_admissible.size() == 2,
+            std::to_string(chosen.second.robust_admissible.size()));
     check11(failures, "the payload lists the robust key of every option",
             chosen.second.net_delta_robust.size() == 2);
 
@@ -458,7 +458,7 @@ inline int run_harness_v011() {
             !chosen_none.first.has_value(),
             chosen_none.first ? chosen_none.first->option_id : std::string("none"));
     check11(failures, "…and the payload still reports what it refused",
-            chosen_none.second.robust_candidates.empty() &&
+            chosen_none.second.robust_admissible.empty() &&
                 chosen_none.second.hypothesis_conflict);
 
     // §4.5 key 3 under its robust reading: an option that closes nothing under the
@@ -535,6 +535,130 @@ inline int run_harness_v011() {
             same_lost_rows(rows_flat, rows_per_h),
             std::to_string(rows_flat.size()) + " vs " + std::to_string(rows_per_h.size()) +
                 " rows");
+    std::cout << "\n";
+
+    // --- 7. §6.1/§6.2/§6.3: the report under a declared set -----------------
+    std::cout << "=== 7. §6.1/§6.2/§6.3: the audit report is per hypothesis ===";
+    std::cout << "\n";
+    // A layer a port can compute but cannot publish is not landed: the conditional
+    // vectors lived in this port's core and in this harness, and nothing a consumer
+    // could call returned them. The report is the release's output, so the layer is
+    // asserted here on the **report** and not on the core.
+    //
+    // The fixture: the entity is read well above the zero under the observed reading
+    // and just above it under `h_bar`, so an option that drains it is barred under
+    // one reading and admissible under the other — the asymmetry §6.3 exists to
+    // report rather than average away.
+    const std::vector<ActionOption> report_candidates = {strong, sink};
+
+    ReportInput report_input;
+    report_input.ctx = &ctx;
+    const dof::ReportV011 report =
+        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", nullptr, report_input);
+
+    // With no declared set the observed state alone is the answer (§4.10.6): one
+    // reading, and the flat part of the report unchanged.
+    const dof::ReportV011 flat_report =
+        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", nullptr, report_input);
+
+    dof::HypothesisSet hset;
+    hset.members = bar_members;
+    const dof::ReportV011 set_report =
+        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", &hset, report_input);
+
+    check11(failures, "§4.10.6: without a declared set the report has one observed reading",
+            report.hypotheses.size() == 1 &&
+                report.hypotheses.count(kObservedHypothesisId) == 1,
+            std::to_string(report.hypotheses.size()) + " readings");
+    check11(failures, "…and the flat report is the whole answer, not a one-entry map",
+            flat_report.conditional_vectors.empty() ||
+                flat_report.plausible_hypotheses.size() == 1,
+            std::to_string(flat_report.plausible_hypotheses.size()) + " plausible");
+    check11(failures, "§6.2: the report names the declared set and the plausible readings",
+            set_report.hypotheses.size() == 2 && set_report.plausible_hypotheses.size() == 2,
+            std::to_string(set_report.hypotheses.size()) + " declared, " +
+                std::to_string(set_report.plausible_hypotheses.size()) + " plausible");
+    check11(failures, "§6.2: an undeclared coverage is reported as `partial`",
+            set_report.hypothesis_coverage == "partial", set_report.hypothesis_coverage);
+    check11(failures, "§6.2: the index under a set is a map, one entry per reading",
+            set_report.total_system_dof_by_hypothesis.size() == 2 &&
+                set_report.total_system_dof_by_hypothesis.at(kObservedHypothesisId) !=
+                    set_report.total_system_dof_by_hypothesis.at("h_bar"),
+            num11(set_report.total_system_dof_by_hypothesis.at(kObservedHypothesisId)) + " vs " +
+                num11(set_report.total_system_dof_by_hypothesis.at("h_bar")));
+
+    // Every candidate carries its whole vector per reading, and the vectors are
+    // compared against the core's own per-reading computation — a report that drifted
+    // from the decision it publishes is caught here and nowhere else.
+    bool vec_ok = !set_report.conditional_vectors.empty();
+    std::string vec_detail;
+    for (const auto& kv : set_report.conditional_vectors) {
+        if (kv.second.size() != bar_members.size()) {
+            vec_ok = false;
+            vec_detail = kv.first + ": " + std::to_string(kv.second.size()) + " readings";
+            break;
+        }
+        for (const auto& per_h : kv.second) {
+            // The reading's **own** state, which is what the conditional pass reads
+            // (§4.9): comparing against the observed state would accept a report
+            // that had averaged the readings back together.
+            const SystemStateMatrix* h_state = nullptr;
+            for (const auto& h : bar_members) {
+                if (h.id == per_h.first) h_state = &h.state;
+            }
+            if (h_state == nullptr) {
+                vec_ok = false;
+                vec_detail = kv.first + ": unknown reading " + per_h.first;
+                continue;
+            }
+            const ActionOption& option = per_h.second.option_id == "sink" ? sink : strong;
+            const ConditionalVector direct =
+                dof::conditional_vector_of(core, *h_state, option, ctx, per_h.first);
+            if (per_h.second.d1 != direct.d1 || per_h.second.d2 != direct.d2 ||
+                per_h.second.d3 != direct.d3 ||
+                std::fabs(per_h.second.net_delta - direct.net_delta) > 1e-9) {
+                vec_ok = false;
+                vec_detail = kv.first + " under " + per_h.first;
+            }
+        }
+    }
+    check11(failures, "§6.3: every candidate carries its conditional vector per reading", vec_ok,
+            vec_detail);
+
+    // The barring condition must be visible **under the reading that barred it**.
+    const auto sink_it = set_report.admissible_under.find("sink");
+    check11(failures, "§6.3: a candidate barred under one reading is visible as barred there",
+            sink_it != set_report.admissible_under.end() &&
+                sink_it->second.at("h_bar") == false &&
+                sink_it->second.at(kObservedHypothesisId) == true,
+            sink_it != set_report.admissible_under.end()
+                ? (std::string(sink_it->second.at("h_bar") ? "true" : "false") + " / " +
+                   std::string(sink_it->second.at(kObservedHypothesisId) ? "true" : "false"))
+                : std::string("absent"));
+    const auto keys_it = set_report.barring_key_by_hypothesis.find("sink");
+    check11(failures, "§6.3: the key that barred it is reported per reading",
+            keys_it != set_report.barring_key_by_hypothesis.end() &&
+                keys_it->second.at("h_bar").has_value() &&
+                keys_it->second.at(kObservedHypothesisId).value_or("none") !=
+                    keys_it->second.at("h_bar").value_or("none"),
+            keys_it != set_report.barring_key_by_hypothesis.end()
+                ? (keys_it->second.at(kObservedHypothesisId).value_or("none") + " / " +
+                   keys_it->second.at("h_bar").value_or("none"))
+                : std::string("absent"));
+    check11(failures, "§4.10.5: the split admissibility is surfaced as a conflict",
+            set_report.hypothesis_conflict, set_report.hypothesis_conflict ? "true" : "false");
+
+    // §6.1: the reason a value is what it is belongs to a reading too — there is no
+    // shared `ψ` to print once the readings differ.
+    const auto lens_it = set_report.lens_terms_by_hypothesis.find(entity);
+    check11(failures, "§6.1: the lens terms and the verdict are reported per reading",
+            lens_it != set_report.lens_terms_by_hypothesis.end() &&
+                lens_it->second.size() == 2 &&
+                set_report.recoverability_by_hypothesis.count(entity) == 1 &&
+                set_report.recoverability_by_hypothesis.at(entity).size() == 2,
+            lens_it != set_report.lens_terms_by_hypothesis.end()
+                ? std::to_string(lens_it->second.size()) + " readings"
+                : std::string("absent"));
     std::cout << "\n";
 
     return static_cast<int>(failures.size());

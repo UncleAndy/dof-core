@@ -356,6 +356,15 @@ type EntityReportRow struct {
 	// §6.1 (v0.7): the recoverability verdict, its witness and the completeness
 	// of the observation behind it.
 	Recoverability map[string]interface{} `json:"recoverability"`
+	// §6.1 (v0.11): the same three facts **per reading**. The lens terms and the
+	// binding channel belong to a measurement, so under a declared set there is no
+	// shared `ψ` to print and no single verdict to report: the channel that binds
+	// and the reading under which the entity can be revived are results, not
+	// noise. Absent when no set is declared, where the flat fields are the whole
+	// answer.
+	LensTermsByHypothesis      map[string][]LensTerm             `json:"lens_terms_by_hypothesis"`
+	BindingLensByHypothesis    map[string]*string                `json:"binding_lens_by_hypothesis"`
+	RecoverabilityByHypothesis map[string]map[string]interface{} `json:"recoverability_by_hypothesis"`
 }
 
 type CollapseCharge struct {
@@ -383,15 +392,19 @@ func (obs *ResourceObservation) IsUsable() bool {
 	return obs != nil && obs.Value != nil && *obs.Value > 0.0
 }
 
-// CandidateVector is the v0.8 candidate vector (§4.5): three counts of entities —
-// the protected dimensions — plus the index and the reversibility preference.
+// CandidateVector is §6.3's `candidate_vector`: the keys of §4.5 as computed for
+// one option. `viable` and `resources_ok` are **conditions of admissibility**, not
+// annotations — a `false` in either bars the option exactly as a positive `d` does
+// — so they are part of the vector and not of the row's context.
 type CandidateVector struct {
-	D1         int     `json:"d1"`
-	D2         int     `json:"d2"`
-	D3         int     `json:"d3"`
-	NetDelta   float64 `json:"net_delta"`
-	Reversible bool    `json:"reversible"`
-	OptionID   string  `json:"option_id"`
+	D1          int     `json:"d1"`
+	D2          int     `json:"d2"`
+	D3          int     `json:"d3"`
+	NetDelta    float64 `json:"net_delta"`
+	Reversible  bool    `json:"reversible"`
+	OptionID    string  `json:"option_id"`
+	Viable      bool    `json:"viable"`
+	ResourcesOK bool    `json:"resources_ok"`
 }
 
 // LostPathEntry is one entity this option drops out of a `reachable` verdict,
@@ -427,6 +440,36 @@ type OptionReportRow struct {
 	LostPaths       []LostPathEntry `json:"lost_paths"`
 	Requires        []string        `json:"requires"`
 	Discovers       []string        `json:"discovers"`
+	// §6.3 (v0.11): the v0.11 report surface. The flat fields above describe the
+	// **observed** reading (`is_reversible`, `closed`, `closure_share`); the
+	// per-reading values live here, and they are what a cross-port comparison of
+	// this release reads.
+	//
+	// `ConditionalVectors` is the structure of the change across readings — an
+	// asymmetry between hypotheses is a result, not an intermediate — and every
+	// entry is computed from that reading's own triple: the state `S | h`, the
+	// projection `projection[h]` and the closures `closure[h]` (§6.3).
+	ConditionalVectors map[string]ConditionalVector `json:"conditional_vectors"`
+	// §6.3: per reading, whether the option was admissible and which condition
+	// barred it. A candidate barred under **some** plausible reading failed a
+	// condition of admissibility under that reading (§4.10.5), and that failure is
+	// invisible in the integer keys of one state.
+	AdmissibleUnder        map[string]bool    `json:"admissible_under"`
+	BarringKeyByHypothesis map[string]*string `json:"barring_key_by_hypothesis"`
+	// §6.3: the ordering key's own inputs under a hypothesis set —
+	// `NetDelta_robust = min_h NetDelta(o | h)` and reversibility under **every**
+	// plausible reading. Reported beside the flat fields so the key's input is
+	// visible as the worst case it is, never as one reading's value.
+	NetDeltaRobust     *float64 `json:"net_delta_robust"`
+	RobustIsReversible bool     `json:"robust_is_reversible"`
+	// §6.3: the two declared forms, so a reader can tell whether a difference
+	// between the conditional vectors comes from the state or from the
+	// declaration, together with this option's executability conditions.
+	ProjectionForm  string `json:"projection_form"`
+	ClosureForm     string `json:"closure_form"`
+	Viability       bool   `json:"viability"`
+	ResourcesOK     bool   `json:"resources_ok"`
+	FormsConsistent bool   `json:"forms_consistent"`
 }
 
 type RemovedOption struct {
@@ -457,6 +500,25 @@ type DofReport struct {
 	// any candidate beat it. A refusal to act is a decision and must be audible.
 	Baseline          CandidateVector `json:"baseline"`
 	NoCandidateBetter bool            `json:"no_candidate_better"`
+	// --- §6.2 (v0.11): the report is **per hypothesis** ----------------------
+	//
+	// There is no single total under a hypothesis set and the report MUST NOT
+	// present one: `TotalSystemDoF` above is the **observed reading's** value — the
+	// reading the flat fields of §6.3 describe — and this map is the state's index
+	// per reading. A scalar here would be the average the standard refuses (§2).
+	PsiRulerDigest     *string  `json:"psi_ruler_digest"`
+	Hypotheses         []*Hypothesis `json:"hypotheses"`
+	HypothesisCoverage string   `json:"hypothesis_coverage"`
+	PlausibleHypotheses []string `json:"plausible_hypotheses"`
+	HypothesisHorizonMks *float64 `json:"hypothesis_horizon_mks"`
+	TotalSystemDoFByHypothesis map[string]float64 `json:"total_system_dof_by_hypothesis"`
+	HypothesisConflict bool `json:"hypothesis_conflict"`
+	// §6.3: the whole decision payload, so a consumer can read the conditional
+	// vectors without walking every option row.
+	ConditionalVectors map[string]map[string]ConditionalVector `json:"conditional_vectors"`
+	AdmissibleUnder    map[string]map[string]bool              `json:"admissible_under"`
+	NetDeltaRobust     map[string]float64                      `json:"net_delta_robust"`
+	RobustAdmissible   []string                                `json:"robust_admissible"`
 }
 
 // ReportInput carries what a report needs beyond the state, the candidates and
@@ -471,6 +533,20 @@ type ReportInput struct {
 	Cap             *float64
 	Ctx             *ObservationContext
 	MeansProvenance map[string]interface{}
+	// §6.2/§6.3 (v0.11): the reading context. `Readings` is the set the conditional
+	// quantities were computed over — **`H_plausible`**, the reduction of §4.10.6
+	// being the observed-state singleton — while `Declared` is the whole declared
+	// set, which is what `hypotheses` reports: a member excluded by the plausibility
+	// partition is still part of the artifact, and §6.2 asks for the set *and* for
+	// the plausible subset separately. `Selection` is the §4.10 decision payload, so
+	// the report shows every candidate's conditional vector instead of one reading's
+	// flat fields.
+	Readings    []*Hypothesis
+	Declared    []*Hypothesis
+	Coverage    string
+	HorizonMks  *float64
+	RulerDigest *string
+	Selection   *ConditionalSelection
 }
 
 type DOFCalculusCore struct {
@@ -904,8 +980,9 @@ func (c *DOFCalculusCore) candidateVectorFor(state *SystemStateMatrix, option *A
 			D1: len(c.collapseChargesFor(state, option, ctx, hypothesisID)), D2: len(lost), D3: d3,
 			NetDelta: c.netDelta(state, option, projected, currentIndex),
 			Reversible: c.IsReversibleFor(option, hypothesisID), OptionID: option.OptionID,
+			Viable: viable, ResourcesOK: resourcesOK,
 		},
-		HypothesisID: hypothesisID, Viable: viable, ResourcesOK: resourcesOK,
+		HypothesisID: hypothesisID,
 	}
 }
 
@@ -919,15 +996,32 @@ func (c *DOFCalculusCore) candidateVector(state *SystemStateMatrix, option *Acti
 		ObservedHypothesisID, viability.Viable, plan.Covered).CandidateVector
 }
 
-// BaselineVector is staying put: the zero vector, NetDelta = 0 by definition.
+// BaselineVector is staying put: the zero vector, NetDelta = 0 by definition. It is
+// admissible by construction — an option that cannot be executed is never better
+// than doing nothing — so both executability conditions hold (§6.2, §6.3).
 func (c *DOFCalculusCore) BaselineVector() CandidateVector {
-	return CandidateVector{D1: 0, D2: 0, D3: 0, NetDelta: 0.0, Reversible: true}
+	return CandidateVector{D1: 0, D2: 0, D3: 0, NetDelta: 0.0, Reversible: true,
+		Viable: true, ResourcesOK: true}
 }
 
 // BarringKey is the first dimension on which a candidate fails to beat staying
 // put (§4.5, §6.2). nil means nothing barred it: it outranks the baseline, or
 // ties it while staying reversible.
+//
+// The executability conditions come **first**, in the order §4.8b evaluates them —
+// temporal (`viable`), then structural, then financial (`resources_ok`) — and the
+// order is unobservable to the result, so any of the keys reports the same bar.
+// Leaving them out would let an option that cannot be executed be reported as
+// barred for a structural reason it never reached.
 func (c *DOFCalculusCore) BarringKey(vector CandidateVector) *string {
+	if !vector.Viable {
+		k := "viable"
+		return &k
+	}
+	if !vector.ResourcesOK {
+		k := "resources_ok"
+		return &k
+	}
 	for _, key := range []string{"d1", "d2", "d3"} {
 		if dimension(vector, key) > 0 {
 			k := key
@@ -1369,9 +1463,40 @@ func (c *DOFCalculusCore) closureShare(state *SystemStateMatrix, option *ActionO
 	return out
 }
 
+// coverageOrDefault reads a declared coverage with the cautious default of §3.6:
+// an absent value reads as `"partial"`, never as `"complete"`.
+func coverageOrDefault(coverage string) string {
+	if coverage == "" {
+		return "partial"
+	}
+	return coverage
+}
+
 // report is the transparent audit (DOF-SPEC §6). Required by the license (PoI).
 func (c *DOFCalculusCore) Report(currentState *SystemStateMatrix, options []*ActionOption, selected *ActionOption, mode string, in ReportInput) *DofReport {
 	ctx := in.Ctx
+	// §6.2/§6.3 (v0.11): the report is **per hypothesis**. `in.Readings` is the
+	// cycle's list of readings — the observed-state singleton when no set is
+	// declared, which is the reduction of §4.10.6 — and reading a hypothesis means
+	// reading *its* state under the same observation, whose §4.9 verdicts are that
+	// reading's. The graph and the ruler stay shared; only the measured content
+	// moves, so nothing here re-derives an observation.
+	stateOf := func(h *Hypothesis) *SystemStateMatrix {
+		if h == nil || h.State == nil {
+			return currentState
+		}
+		return h.State
+	}
+	ctxOf := func(h *Hypothesis) *ObservationContext {
+		if ctx == nil || h == nil || h.State == nil {
+			return ctx
+		}
+		dofs := map[string]float64{}
+		for eID, e := range h.State.Entities {
+			dofs[eID] = e.CurrentDoF
+		}
+		return ctx.WithDoF(dofs)
+	}
 	var entityRows []EntityReportRow
 	for _, ent := range currentState.Entities {
 		included := c.isIncluded(ent, ctx, currentState)
@@ -1395,6 +1520,25 @@ func (c *DOFCalculusCore) Report(currentState *SystemStateMatrix, options []*Act
 			row.Blocks = ent.Measurement.Blocks
 			row.Derivation = ent.Measurement.Derivation
 		}
+		// §6.1 (v0.11): the same facts per reading. Absent when the cycle ran on the
+		// observed state alone — the flat fields are then the whole answer, and a
+		// one-entry map would claim a comparison nobody asked for.
+		if len(in.Readings) > 1 {
+			row.LensTermsByHypothesis = map[string][]LensTerm{}
+			row.BindingLensByHypothesis = map[string]*string{}
+			row.RecoverabilityByHypothesis = map[string]map[string]interface{}{}
+			for _, h := range in.Readings {
+				if h == nil {
+					continue
+				}
+				if e, ok := stateOf(h).Entities[ent.EntityID]; ok && e.Measurement != nil {
+					row.LensTermsByHypothesis[h.ID] = e.Measurement.Terms
+					binding := e.Measurement.BindingLens
+					row.BindingLensByHypothesis[h.ID] = &binding
+				}
+				row.RecoverabilityByHypothesis[h.ID] = c.recoverabilityRow(ent.EntityID, ctxOf(h))
+			}
+		}
 		entityRows = append(entityRows, row)
 	}
 	total := c.CalculateSystemDoF(currentState, nil, ctx)
@@ -1406,7 +1550,7 @@ func (c *DOFCalculusCore) Report(currentState *SystemStateMatrix, options []*Act
 		net := vector.NetDelta
 		isSelected := selected != nil && selected.OptionID == option.OptionID
 		plan := c.PlanFunding(currentState, option, in.Groups, in.Rates, in.Weights, in.Cap)
-		optionRows = append(optionRows, OptionReportRow{
+		row := OptionReportRow{
 			OptionID:             option.OptionID,
 			IsReversible:         c.IsReversible(option),
 			ProjectedDoF:         projected,
@@ -1425,7 +1569,40 @@ func (c *DOFCalculusCore) Report(currentState *SystemStateMatrix, options []*Act
 			CandidateVector: vector,
 			BarringKey:      c.BarringKey(vector),
 			LostPaths:       c.lostPaths(currentState, option, ctx),
-		})
+		}
+		// §6.3 (v0.11): the declared forms and this option's executability
+		// conditions, then the per-reading values. The flat fields above stay the
+		// observed reading's: `is_reversible`, `closed` and `closure_share` of §6.3
+		// describe the observed state by the same sentence that puts the per-reading
+		// values here.
+		row.ProjectionForm = option.ProjectionForm()
+		row.ClosureForm = option.ClosureForm()
+		row.FormsConsistent = option.FormsConsistent() == ""
+		row.Viability = c.Viability(currentState, option).Viable
+		row.ResourcesOK = plan.Covered
+		if in.Selection != nil {
+			// The payload the decision itself used — never a second computation, or
+			// the report could show vectors no reading produced.
+			row.ConditionalVectors = in.Selection.ConditionalVectors[option.OptionID]
+			row.AdmissibleUnder = in.Selection.AdmissibleUnder[option.OptionID]
+			if nd, ok := in.Selection.NetDeltaRobust[option.OptionID]; ok {
+				value := nd
+				row.NetDeltaRobust = &value
+			}
+			row.RobustIsReversible = c.RobustReversible(option, in.Readings)
+			keys := map[string]*string{}
+			firstBar := row.BarringKey
+			for hid, vec := range row.ConditionalVectors {
+				key := c.BarringKey(vec.CandidateVector)
+				keys[hid] = key
+				if firstBar == nil && key != nil {
+					firstBar = key
+				}
+			}
+			row.BarringKeyByHypothesis = keys
+			row.BarringKey = firstBar
+		}
+		optionRows = append(optionRows, row)
 	}
 
 	resAfterCopy := make(map[string]*ResourceObservation)
@@ -1473,6 +1650,37 @@ func (c *DOFCalculusCore) Report(currentState *SystemStateMatrix, options []*Act
 		// of them beat it. A silent "no action" is an omission.
 		Baseline:          c.BaselineVector(),
 		NoCandidateBetter: len(options) > 0 && selected == nil,
+	}
+	// §6.2 (v0.11): the declared set as report context, and the index **per
+	// reading**. `TotalSystemDoF` above stays the observed reading's value (§6.3's
+	// flat fields describe that reading); this map is what a reader of a per-reading
+	// report must use, and no single number is presented as the state's total.
+	totalsByH := map[string]float64{}
+	plausible := []string{}
+	for _, h := range in.Readings {
+		if h == nil {
+			continue
+		}
+		totalsByH[h.ID] = c.CalculateSystemDoF(stateOf(h), nil, ctxOf(h))
+		if h.Plausible {
+			plausible = append(plausible, h.ID)
+		}
+	}
+	report.Hypotheses = in.Declared
+	if len(report.Hypotheses) == 0 {
+		report.Hypotheses = in.Readings
+	}
+	report.HypothesisCoverage = coverageOrDefault(in.Coverage)
+	report.PlausibleHypotheses = plausible
+	report.HypothesisHorizonMks = in.HorizonMks
+	report.TotalSystemDoFByHypothesis = totalsByH
+	report.PsiRulerDigest = in.RulerDigest
+	if in.Selection != nil {
+		report.HypothesisConflict = in.Selection.HypothesisConflict
+		report.ConditionalVectors = in.Selection.ConditionalVectors
+		report.AdmissibleUnder = in.Selection.AdmissibleUnder
+		report.NetDeltaRobust = in.Selection.NetDeltaRobust
+		report.RobustAdmissible = in.Selection.RobustAdmissible
 	}
 	if report.MeansProvenance == nil {
 		report.MeansProvenance = map[string]interface{}{}

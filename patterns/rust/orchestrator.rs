@@ -228,6 +228,7 @@ impl DofOrchestrator {
                 cap,
                 ctx,
                 means_provenance,
+                                ..Default::default()
             },
         );
         (selected, report)

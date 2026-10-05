@@ -487,8 +487,8 @@ def test_executability_is_conditional():
         groups=declaration.groups, rates=declaration.rates,
         weights=declaration.weights, cap=declaration.mandate_cap)
     check("(j) a candidate barred under one reading is not robustly admissible",
-          "long_act" not in (metrics.get("robust_candidates") or []),
-          str(metrics.get("robust_candidates")))
+          "long_act" not in (metrics.get("robust_admissible") or []),
+          str(metrics.get("robust_admissible")))
     check("(j) and the admissible support is reported per reading",
           set(metrics["admissible_under"]["long_act"]) == {"$observed$", "h_short"},
           str(metrics.get("admissible_under")))

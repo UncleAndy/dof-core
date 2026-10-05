@@ -257,6 +257,13 @@ class ResourceObservation(BaseModel):
 class DofReport(BaseModel):
     """Proof-of-Implementation audit (DOF-SPEC §6). Serializable to JSON."""
     entities: List[Dict[str, object]]
+    # §6.2: under a hypothesis set the state's index is a **map**, one entry per
+    # plausible reading, and this scalar is **the observed reading's** value — the
+    # reading the flat fields of §6.3 also describe (`is_reversible`, `closed`,
+    # `closure_share`). It is not an average and not a single total: a reader who
+    # wants the state's index under a declared set reads
+    # `total_system_dof_by_hypothesis` below, and the scalar is present only so
+    # that a consumer of a pre-`v0.11` report finds the field it knows.
     total_system_dof: float
     context_switch_cost: float
     global_time_to_collapse_mks: float
@@ -292,8 +299,13 @@ class DofReport(BaseModel):
     # a reading, so printing one shared `ψ` per entity is forbidden — there is no
     # shared value to print (§6.1). `total_system_dof` becomes a map.
     psi_ruler_digest: Optional[str] = None
-    hypotheses: List[Dict[str, object]] = []          # id, plausible, basis, coverage
-    coverage: str = "partial"
+    hypotheses: List[Dict[str, object]] = []          # id, plausible, basis, collapse_source_candidates, state
+    # §6.2 names these three: the coverage of the declared set (absent reads as
+    # "partial"), the identifiers of `H_plausible`, and the candidates admissible
+    # under **every** plausible reading. The names are the contract's, so a reader
+    # of the report is not left to guess which of two spellings means which.
+    hypothesis_coverage: str = "partial"
+    plausible_hypotheses: List[str] = []
     hypothesis_horizon_mks: Optional[float] = None
     total_system_dof_by_hypothesis: Dict[str, float] = {}
     hypothesis_conflict: bool = False
@@ -302,7 +314,7 @@ class DofReport(BaseModel):
     conditional_vectors: Dict[str, Dict[str, Dict[str, object]]] = {}
     admissible_under: Dict[str, Dict[str, bool]] = {}
     net_delta_robust: Dict[str, float] = {}
-    robust_candidates: List[str] = []
+    robust_admissible: List[str] = []
     # §6.2: the single reactive-circuit mode, taken from the **observed** state,
     # and the readings whose τ would have selected a different one.
     mode_dissenters: List[Dict[str, object]] = []
@@ -1059,7 +1071,7 @@ class DOFCalculusCore:
             "admissible_under": {o.option_id: self.admissible_under(per_h_all[o.option_id], members)
                                  for o in options},
             "hypothesis_conflict": conflict,
-            "robust_candidates": [o.option_id for o in robust],
+            "robust_admissible": [o.option_id for o in robust],
             "net_delta_robust": {o.option_id: self.least_favourable(per_h_all[o.option_id], members)
                                  for o in options},
             "vectors": vectors,
@@ -1554,7 +1566,7 @@ class DOFCalculusCore:
                 first_bar = next((k for k in by_h.values() if k is not None), None)
                 if first_bar is not None:
                     option_rows[-1]["barring_key"] = first_bar
-        robust_ids = list(metrics.get("robust_candidates") or []) if metrics else None
+        robust_ids = list(metrics.get("robust_admissible") or []) if metrics else None
         return DofReport(
             entities=entity_rows,
             total_system_dof=total,
@@ -1580,16 +1592,24 @@ class DOFCalculusCore:
             measurement_time_spent=0.0,
             # §6.2/§6.3 (v0.11).
             psi_ruler_digest=ruler_digest,
+            # §6.2: the declared set as provenance. The `state` of each reading is
+            # reported in full, because it is what the conditional quantities were
+            # computed from — a reader who cannot see it cannot attribute a
+            # difference between two conditional vectors to anything.
             hypotheses=[{"id": h.id, "plausible": bool(h.plausible), "basis": h.basis,
-                         "collapse_source_candidates": list(h.collapse_source_candidates)}
+                         "collapse_source_candidates": list(h.collapse_source_candidates),
+                         "state": (h.state.model_dump() if getattr(h, "state", None) is not None
+                                   else None)}
                         for h in observed if h is not None],
-            coverage=coverage,
+            hypothesis_coverage=coverage,
+            plausible_hypotheses=[h.id for h in observed
+                                  if h is not None and bool(h.plausible)],
             hypothesis_horizon_mks=horizon_mks,
             total_system_dof_by_hypothesis=totals_by_h,
             hypothesis_conflict=bool(metrics.get("hypothesis_conflict")) if metrics else False,
             conditional_vectors=(metrics.get("conditional_vectors") or {}) if metrics else {},
             admissible_under=(metrics.get("admissible_under") or {}) if metrics else {},
             net_delta_robust=(metrics.get("net_delta_robust") or {}) if metrics else {},
-            robust_candidates=robust_ids or [],
+            robust_admissible=robust_ids or [],
             mode_dissenters=list(mode_dissenters or []),
         )

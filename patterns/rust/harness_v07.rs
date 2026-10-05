@@ -955,6 +955,7 @@ pub fn run_harness_v07() -> Vec<String> {
             cap: decl.mandate_cap,
             ctx: c,
             means_provenance: provenance,
+                        ..Default::default()
         },
     );
     let mut rows: BTreeMap<String, crate::dof_core::EntityReportRow> = BTreeMap::new();
