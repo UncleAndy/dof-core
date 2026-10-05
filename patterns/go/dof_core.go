@@ -277,6 +277,39 @@ type ObservationContext struct {
 	TRec               map[string]float64
 	CountingHorizonMks *float64
 	ObservationDigest  string
+	// §3.6/§4.9/§4.10 (v0.11): `DoF(X | h)` — the per-entity degrees of freedom
+	// **under one reading**, which the §4.9 verdict consumes. `nil` means "read
+	// the graph's own value", which is what the observed reading does; a
+	// hypothesis reading supplies its own numbers here. Structural inputs —
+	// `G`, the paths and their admissibility, `M(S)`, `T_rec(X)` — stay shared:
+	// only the DoF is conditional.
+	DoFOverride map[string]float64
+}
+
+// doFOverrideOf is the reading's `DoF(X | h)` for one entity, or nil when this
+// context carries no reading (§4.9).
+func (ctx *ObservationContext) doFOverrideOf(entityID string) *float64 {
+	if ctx == nil || ctx.DoFOverride == nil {
+		return nil
+	}
+	if v, ok := ctx.DoFOverride[entityID]; ok {
+		return &v
+	}
+	return nil
+}
+
+// WithDoF is §3.6/§4.9: the same observation, read under one hypothesis's DoF.
+//
+// Every shared input is carried over untouched — the graph, `M(S)`, the horizons,
+// the observation digest — because §3.6 shares them by construction: only
+// `DoF(X | h)` differs between readings, and only it is replaced here.
+func (ctx *ObservationContext) WithDoF(dofs map[string]float64) *ObservationContext {
+	if ctx == nil {
+		return nil
+	}
+	clone := *ctx
+	clone.DoFOverride = dofs
+	return &clone
 }
 
 func (ctx *ObservationContext) horizon(entityID string) *float64 {
@@ -290,7 +323,11 @@ func (ctx *ObservationContext) horizon(entityID string) *float64 {
 }
 
 func (ctx *ObservationContext) verdict(entityID string) string {
-	return ctx.World.Verdict(entityID, ctx.MeansClass, ctx.horizon(entityID)).Verdict
+	// §4.9/§4.10: the verdict consumes `DoF(X | h)`. Under the observed reading
+	// there is no override and the graph's own value is used — byte-identical to
+	// every earlier release; under a hypothesis the reading supplies it.
+	return ctx.World.VerdictWithDoF(entityID, ctx.MeansClass,
+		ctx.horizon(entityID), ctx.doFOverrideOf(entityID)).Verdict
 }
 
 func (ctx *ObservationContext) vBefore(entityID string) int {
@@ -555,7 +592,12 @@ func (c *DOFCalculusCore) coerceDoF(v float64) float64 {
 // (§4.3, §4.4). Only the Variety share moves, so the whole product moves by its
 // ratio: the other lenses (and any u(t) factors) are untouched by a closure.
 // A nil result means the entity is not affected or its Variety lens is unmeasured.
-func (c *DOFCalculusCore) dofAfterClosure(entity *EntityState, option *ActionOption, ctx *ObservationContext) *float64 {
+//
+// §4.10 (v0.11): the closure list is read **under `hypothesisID`** — with a
+// per-hypothesis `closed` the same option destroys different transitions under
+// different readings, and a quantity of §4.3–§4.4 that read the flat list would
+// silently decide every reading by the observed one.
+func (c *DOFCalculusCore) dofAfterClosureFor(entity *EntityState, option *ActionOption, ctx *ObservationContext, hypothesisID string) *float64 {
 	m := entity.Measurement
 	if m == nil || m.Psi["variety"] == nil || len(m.VarietyCounters) == 0 {
 		return nil
@@ -563,12 +605,18 @@ func (c *DOFCalculusCore) dofAfterClosure(entity *EntityState, option *ActionOpt
 	vEnv := m.VarietyCounters["V_env"]
 	varBefore := *m.Psi["variety"]
 	vBefore := ctx.vBefore(entity.EntityID)
-	vAfter := ctx.vAfterClosure(entity.EntityID, option.Closed)
+	vAfter := ctx.vAfterClosure(entity.EntityID, option.ClosedFor(hypothesisID))
 	if vAfter == vBefore {
 		return nil // this entity is not affected
 	}
 	v := c.coerceDoF(entity.CurrentDoF / varBefore * PsiVar(float64(vAfter), vEnv))
 	return &v
+}
+
+// dofAfterClosure is the **observed-reading** entry point (absence of a set is
+// the observed singleton, §3.6).
+func (c *DOFCalculusCore) dofAfterClosure(entity *EntityState, option *ActionOption, ctx *ObservationContext) *float64 {
+	return c.dofAfterClosureFor(entity, option, ctx, ObservedHypothesisID)
 }
 
 // projectedDoF is the DoF this option would leave the entity with, closure
@@ -578,38 +626,82 @@ func (c *DOFCalculusCore) dofAfterClosure(entity *EntityState, option *ActionOpt
 // entity BY CLOSING ITS TRANSITIONS would be scored as a collapse and charged as
 // nothing — the structural gate of §4.5 would then pass exactly the option it
 // exists to stop. Two call sites, one rule.
-func (c *DOFCalculusCore) projectedDoF(eState *EntityState, option *ActionOption, ctx *ObservationContext) float64 {
-	newDoF := c.coerceDoF(eState.CurrentDoF + option.ProjectedDoFDelta[eState.EntityID])
-	if ctx != nil && len(option.Closed) > 0 {
-		if recomputed := c.dofAfterClosure(eState, option, ctx); recomputed != nil {
+//
+// Both the raw delta and the closure list are read **under `hypothesisID`**
+// (§3.3, §4.4): a per-hypothesis option projects a different DoF under each
+// reading, and the closure that the projection is corrected by must be the
+// closure of the same reading.
+func (c *DOFCalculusCore) projectedDoFFor(eState *EntityState, option *ActionOption, ctx *ObservationContext, hypothesisID string) float64 {
+	newDoF := c.coerceDoF(eState.CurrentDoF + option.DeltaFor(hypothesisID, eState.EntityID))
+	if ctx != nil && len(option.ClosedFor(hypothesisID)) > 0 {
+		if recomputed := c.dofAfterClosureFor(eState, option, ctx, hypothesisID); recomputed != nil {
 			newDoF = *recomputed
 		}
 	}
 	return newDoF
 }
 
+// projectedDoF is the observed-reading entry point.
+func (c *DOFCalculusCore) projectedDoF(eState *EntityState, option *ActionOption, ctx *ObservationContext) float64 {
+	return c.projectedDoFFor(eState, option, ctx, ObservedHypothesisID)
+}
+
+// allClosedLists is every closure list the option declares: one for a flat
+// option, one per reading for a per-hypothesis option (§3.3, §4.4). The
+// declaration guards below must hold under **every** reading, so they range over
+// these lists and never over the flat field alone.
+func (o *ActionOption) allClosedLists() [][]ClosedRef {
+	if o.ClosureForm() != "per_hypothesis" {
+		return [][]ClosedRef{o.Closed}
+	}
+	ids := make([]string, 0, len(o.ClosedByHypothesis))
+	for id := range o.ClosedByHypothesis {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([][]ClosedRef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, o.ClosedByHypothesis[id])
+	}
+	return out
+}
+
 func (c *DOFCalculusCore) validateClosure(option *ActionOption) error {
-	if len(option.Closed) > 0 && option.ActID != "" {
-		for _, ref := range option.Closed {
-			if ref.Kind == "act" && ref.ID == option.ActID {
-				return fmt.Errorf("%s: closes its own execution path (§4.4 guard 1)", option.OptionID)
+	for _, lst := range option.allClosedLists() {
+		if len(lst) > 0 && option.ActID != "" {
+			for _, ref := range lst {
+				if ref.Kind == "act" && ref.ID == option.ActID {
+					return fmt.Errorf("%s: closes its own execution path (§4.4 guard 1)", option.OptionID)
+				}
 			}
 		}
 	}
-	if len(option.Closed) == 0 && !option.IsReversible {
+	if option.ClosureForm() == "flat" && len(option.Closed) == 0 && !option.IsReversible {
 		return fmt.Errorf("%s: is_reversible=false with an empty closure list (§4.4 guard 2)", option.OptionID)
 	}
 	return nil
 }
 
 // IsReversible: the reported flag is DERIVED — true exactly when nothing is closed.
-func (c *DOFCalculusCore) IsReversible(option *ActionOption) bool { return len(option.Closed) == 0 }
+//
+// The flag is read under a **reading** (§4.10): with a per-hypothesis `closed`
+// the same option is reversible under one hypothesis and not under another, and
+// the robust reading of §4.5 key 3 is the conjunction over `H_plausible`
+// (`RobustReversible`). This entry point is the observed reading.
+func (c *DOFCalculusCore) IsReversible(option *ActionOption) bool {
+	return c.IsReversibleFor(option, ObservedHypothesisID)
+}
 
-func (c *DOFCalculusCore) simulate(current *SystemStateMatrix, option *ActionOption, ctx *ObservationContext) (*SystemStateMatrix, map[string]bool) {
+// IsReversibleFor is §4.5 key 3 under one named reading.
+func (c *DOFCalculusCore) IsReversibleFor(option *ActionOption, hypothesisID string) bool {
+	return len(option.ClosedFor(hypothesisID)) == 0
+}
+
+func (c *DOFCalculusCore) simulateFor(current *SystemStateMatrix, option *ActionOption, ctx *ObservationContext, hypothesisID string) (*SystemStateMatrix, map[string]bool) {
 	members := c.calcMembers(current, ctx)
 	simulated := make(map[string]*EntityState, len(current.Entities))
 	for eid, eState := range current.Entities {
-		newDoF := c.projectedDoF(eState, option, ctx)
+		newDoF := c.projectedDoFFor(eState, option, ctx, hypothesisID)
 		ent := *eState
 		ent.CurrentDoF = newDoF
 		simulated[eid] = &ent
@@ -623,7 +715,12 @@ func (c *DOFCalculusCore) simulate(current *SystemStateMatrix, option *ActionOpt
 	}, members
 }
 
-func (c *DOFCalculusCore) collapseCharges(current *SystemStateMatrix, option *ActionOption, ctx *ObservationContext) []CollapseCharge {
+// simulate is the observed-reading entry point.
+func (c *DOFCalculusCore) simulate(current *SystemStateMatrix, option *ActionOption, ctx *ObservationContext) (*SystemStateMatrix, map[string]bool) {
+	return c.simulateFor(current, option, ctx, ObservedHypothesisID)
+}
+
+func (c *DOFCalculusCore) collapseChargesFor(current *SystemStateMatrix, option *ActionOption, ctx *ObservationContext, hypothesisID string) []CollapseCharge {
 	charges := []CollapseCharge{}
 	members := c.calcMembers(current, ctx)
 	for eid, entity := range current.Entities {
@@ -632,8 +729,9 @@ func (c *DOFCalculusCore) collapseCharges(current *SystemStateMatrix, option *Ac
 		}
 		// The projected value is the closure-aware one (§4.3): an option can
 		// destroy a counted entity by closing its transitions while declaring no
-		// delta at all, and that is exactly the case §4.5 must catch.
-		newDoF := c.projectedDoF(entity, option, ctx)
+		// delta at all, and that is exactly the case §4.5 must catch — under the
+		// reading being evaluated (§4.10).
+		newDoF := c.projectedDoFFor(entity, option, ctx, hypothesisID)
 		// §4.2: a charge requires a *transition* into the zero, not a stay at
 		// it. An entity already at a known zero was not destroyed by this option
 		// — charging it would make every option destructive in any state that
@@ -645,6 +743,11 @@ func (c *DOFCalculusCore) collapseCharges(current *SystemStateMatrix, option *Ac
 	}
 	sort.Slice(charges, func(i, j int) bool { return charges[i].EntityID < charges[j].EntityID })
 	return charges
+}
+
+// collapseCharges is the observed-reading entry point.
+func (c *DOFCalculusCore) collapseCharges(current *SystemStateMatrix, option *ActionOption, ctx *ObservationContext) []CollapseCharge {
+	return c.collapseChargesFor(current, option, ctx, ObservedHypothesisID)
 }
 
 // ApplyStructuralGate: §4.5. An option that destroys a counted entity is
@@ -729,12 +832,13 @@ func (c *DOFCalculusCore) criticalMembers(state *SystemStateMatrix, ctx *Observa
 // witness is a loss: an entity that leaves `reachable` counts even where no
 // exclusion follows from it, because §4.2 excludes only on a proven_unreachable
 // verdict over a complete observation.
-func (c *DOFCalculusCore) lostPaths(state *SystemStateMatrix, option *ActionOption, ctx *ObservationContext) []LostPathEntry {
+func (c *DOFCalculusCore) lostPathsFor(state *SystemStateMatrix, option *ActionOption, ctx *ObservationContext, hypothesisID string) []LostPathEntry {
 	out := []LostPathEntry{}
-	if ctx == nil || ctx.World == nil || len(option.Closed) == 0 {
+	closed := option.ClosedFor(hypothesisID)
+	if ctx == nil || ctx.World == nil || len(closed) == 0 {
 		return out
 	}
-	closedWorld := ctx.World.WithClosed(option.Closed)
+	closedWorld := ctx.World.WithClosed(closed)
 	critical := c.criticalMembers(state, ctx)
 	for _, id := range sortedKeys(state.Entities) {
 		ent := state.Entities[id]
@@ -769,23 +873,43 @@ func (c *DOFCalculusCore) lostPaths(state *SystemStateMatrix, option *ActionOpti
 	return out
 }
 
-// candidateVector computes the keys of one candidate (§4.5): all of them, from
-// quantities the earlier releases already produce.
-func (c *DOFCalculusCore) candidateVector(state *SystemStateMatrix, option *ActionOption, ctx *ObservationContext, currentIndex float64) CandidateVector {
-	simulated, members := c.simulate(state, option, ctx)
+// lostPaths is the observed-reading entry point.
+func (c *DOFCalculusCore) lostPaths(state *SystemStateMatrix, option *ActionOption, ctx *ObservationContext) []LostPathEntry {
+	return c.lostPathsFor(state, option, ctx, ObservedHypothesisID)
+}
+
+// candidateVectorFor computes the keys of one candidate (§4.5) **under one
+// reading** (§4.10): every quantity of §4.1–§4.5 is conditional, so the
+// simulation, the collapse charges, the lost paths and the reversibility flag
+// are all read under `hypothesisID`.
+func (c *DOFCalculusCore) candidateVectorFor(state *SystemStateMatrix, option *ActionOption, ctx *ObservationContext, currentIndex float64, hypothesisID string, viable, resourcesOK bool) ConditionalVector {
+	simulated, members := c.simulateFor(state, option, ctx, hypothesisID)
 	projected := c.CalculateSystemDoF(simulated, members, ctx)
-	lost := c.lostPaths(state, option, ctx)
+	lost := c.lostPathsFor(state, option, ctx, hypothesisID)
 	d3 := 0
 	for _, row := range lost {
 		if row.Critical {
 			d3++
 		}
 	}
-	return CandidateVector{
-		D1: len(c.collapseCharges(state, option, ctx)), D2: len(lost), D3: d3,
-		NetDelta: c.netDelta(state, option, projected, currentIndex),
-		Reversible: c.IsReversible(option), OptionID: option.OptionID,
+	return ConditionalVector{
+		CandidateVector: CandidateVector{
+			D1: len(c.collapseChargesFor(state, option, ctx, hypothesisID)), D2: len(lost), D3: d3,
+			NetDelta: c.netDelta(state, option, projected, currentIndex),
+			Reversible: c.IsReversibleFor(option, hypothesisID), OptionID: option.OptionID,
+		},
+		HypothesisID: hypothesisID, Viable: viable, ResourcesOK: resourcesOK,
 	}
+}
+
+// candidateVector is the **observed reading** of `candidateVectorFor`: the same
+// pipeline with `H = {$observed$}`, so the historical entry point and the
+// conditional one cannot drift apart.
+func (c *DOFCalculusCore) candidateVector(state *SystemStateMatrix, option *ActionOption, ctx *ObservationContext, currentIndex float64) CandidateVector {
+	viability := c.Viability(state, option)
+	plan := c.PlanFunding(state, option, nil, nil, nil, nil)
+	return c.candidateVectorFor(state, option, ctx, currentIndex,
+		ObservedHypothesisID, viability.Viable, plan.Covered).CandidateVector
 }
 
 // BaselineVector is staying put: the zero vector, NetDelta = 0 by definition.
