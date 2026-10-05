@@ -553,7 +553,20 @@ func (d *MeasurementDeclaration) canonicalDoc() map[string]interface{} {
 	// did before the field existed (§3.4.1, §10(an)).
 	freeze := map[string]interface{}{"tau_mks": tauJSON(d.TauMks)}
 	if len(d.MeasurementDurations) > 0 {
-		freeze["measurement_durations"] = d.MeasurementDurations
+		// §3.4.1: every number of the canonical form is a fixed six-decimal string
+		// (`canonFloat`), so a declared duration is hashed exactly like a scale, a
+		// rate or `tau_mks`. Passing the raw floats through the encoder would render
+		// them as JSON numbers and make Go's digest differ from the reference port's
+		// for the same declaration.
+		durations := make(map[string]interface{}, len(d.MeasurementDurations))
+		for lens, durs := range d.MeasurementDurations {
+			inner := make(map[string]interface{}, len(durs))
+			for name, v := range durs {
+				inner[name] = canonFloat(v)
+			}
+			durations[lens] = inner
+		}
+		freeze["measurement_durations"] = durations
 	}
 
 	doc := map[string]interface{}{

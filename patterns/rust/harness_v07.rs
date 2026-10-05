@@ -775,6 +775,12 @@ pub fn run_harness_v07() -> Vec<String> {
             entities: HashMap::new(),
             psi: None,
             resources: HashMap::new(),
+            // §3.2b/§4.7 (v0.11): this synthetic state declares no deadlines, no
+            // durations and no schedule, which is exactly what the historical
+            // fixture did — the three maps hash as absent (§3.4.3).
+            deadlines: std::collections::BTreeMap::new(),
+            measurement_durations: std::collections::BTreeMap::new(),
+            measurement_schedule: std::collections::BTreeMap::new(),
             tau: Some(ResourceObservation {
                 value: Some(1000000.0),
                 unit: "us".to_string(),

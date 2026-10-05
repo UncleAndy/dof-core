@@ -24,6 +24,29 @@ pub const RESOURCE_LAYER_KEY: &str = "resource_layer";
 /// different observation is a different decision, and the report says which one.
 pub const WORLD_KEY: &str = "world";
 
+/// §3.4.1/§4.7 (v0.11): the reserved observation that carries the declared
+/// measurement durations `t_m`, `t_v` per lens. They are **declared ruler
+/// content**, never inferred: two states differing only in `t_m` produce
+/// different `ruler_digest`, and a hypothesis may not reinterpret how long the
+/// measuring takes (§3.6).
+pub const MEASUREMENT_DURATIONS_KEY: &str = "measurement_durations";
+
+/// §4.7 (v0.11): the reserved observation that carries the declared **schedule**
+/// `t` per lens — when the measurement is planned to happen. An undeclared
+/// schedule reads as `t = 0` (`u₀`); a declared `t > t*` is non-conformant input,
+/// never clamped.
+pub const MEASUREMENT_SCHEDULE_KEY: &str = "measurement_schedule";
+
+/// Whether an observation key is reserved: a description of the ruler or of the
+/// world, not of an entity. A reserved entry left in the entity loop would drag τ
+/// down to its own default of zero.
+pub fn is_reserved_key(key: &str) -> bool {
+    key == RESOURCE_LAYER_KEY
+        || key == WORLD_KEY
+        || key == MEASUREMENT_DURATIONS_KEY
+        || key == MEASUREMENT_SCHEDULE_KEY
+}
+
 /// §4.6/§4.9: declared derived numbers MUST equal what their procedures compute.
 /// Returns the mismatches (empty = the ruler is honest). A declaration that claims a
 /// counter its own observation does not support is exactly the "declared, not
@@ -63,6 +86,15 @@ pub struct ResourceLayer {
     pub rates: BTreeMap<String, Rate>,
     pub resources: Vec<ResourceUnit>,
     pub mandate: BTreeMap<String, MandateValue>,
+    /// §3.2b (v0.11): the declared individual deadlines τ is derived from. An
+    /// entry whose value is `None` is an **active but unmeasured** deadline, and
+    /// it makes τ unknown rather than letting the measured deadlines decide.
+    pub deadlines: BTreeMap<String, Option<f64>>,
+    /// §3.2b (v0.11): the `tau` observation of the resource map. `None` means not
+    /// declared — τ then falls through to the legacy entity-minimum;
+    /// `Some(None)` means declared but **unmeasured**, which is `null` and not
+    /// `0.0`; `Some(Some(v))` is a measured τ, negative when the deadline passed.
+    pub tau_observation: Option<Option<f64>>,
 }
 
 /// Raw observation of one entity. A lens left `None` is **unmeasured**: u(t)
@@ -79,6 +111,12 @@ pub struct RawObservation {
     pub resource_layer: Option<ResourceLayer>,
     /// Set on the reserved `world` entry only: the §3.5 observation of the world.
     pub world: Option<WorldObservation>,
+    /// Set on the reserved `measurement_durations` entry only (§4.7, v0.11): the
+    /// declared `t_m`, `t_v` per lens.
+    pub measurement_durations: Option<BTreeMap<String, BTreeMap<String, f64>>>,
+    /// Set on the reserved `measurement_schedule` entry only (§4.7, v0.11): the
+    /// declared `t` per lens.
+    pub measurement_schedule: Option<BTreeMap<String, f64>>,
 }
 
 pub struct GraphMapper {
@@ -128,7 +166,7 @@ impl GraphMapper {
         // world/agent, not an entity, and a reserved entry left in this loop would
         // drag τ down to its own default of zero.
         for (eid, obs) in raw.iter() {
-            if eid == RESOURCE_LAYER_KEY || eid == WORLD_KEY {
+            if is_reserved_key(eid) {
                 continue;
             }
             observations.insert(eid.clone(), obs.lenses.clone());
@@ -138,7 +176,54 @@ impl GraphMapper {
         }
 
         // Global τ is driven by the most urgent non-collapse-source entity (§3.2).
+        // Since `v0.11` this is the **deprecated mirror**, not τ: it is kept so the
+        // historical fixtures of `v0.6`–`v0.9.1` still read as they did (§3.2b).
         let global_ttc = if min_ttc.is_finite() { min_ttc } else { 1e15 };
+
+        // §3.2b (v0.11): τ is read from the **resource map**, and the individual
+        // deadlines declared alongside it govern it. Three cases, in this order:
+        //
+        //   1. declared individual deadlines — τ is their minimum, and is `None`
+        //      when **any** active deadline is unmeasured: taking the minimum over
+        //      the measured ones alone would read an unknown timer as absent;
+        //   2. otherwise the `tau` observation of the map, which may be negative
+        //      (a passed deadline keeps its magnitude) or `None`;
+        //   3. otherwise the legacy entity-minimum.
+        let declared_deadlines: BTreeMap<String, Option<f64>> = layer
+            .as_ref()
+            .map(|l| l.deadlines.clone())
+            .unwrap_or_default();
+        let tau_value: Option<f64> = if !declared_deadlines.is_empty() {
+            if declared_deadlines.values().any(|v| v.is_none()) {
+                None
+            } else {
+                declared_deadlines.values().filter_map(|v| *v).reduce(f64::min)
+            }
+        } else if let Some(declared) = layer.as_ref().and_then(|l| l.tau_observation) {
+            declared
+        } else {
+            Some(global_ttc)
+        };
+        // §3.2b: the deprecated mirror is clamped and is **not** τ. It is `0.0`
+        // for an unknown and for a passed deadline, and equals τ otherwise.
+        let mirror_ttc = match tau_value {
+            Some(v) if v >= 0.0 => v,
+            _ => 0.0,
+        };
+
+        // §3.4.1/§3.4.2 (v0.11): the measurement durations and the schedule are
+        // **declared ruler content**. They are read from the observation, never
+        // inferred (§4.7), and they are the same for every reading of the cycle — a
+        // hypothesis reinterprets what was measured, not how long the measuring
+        // takes.
+        let measurement_durations: BTreeMap<String, BTreeMap<String, f64>> = raw
+            .get(MEASUREMENT_DURATIONS_KEY)
+            .and_then(|o| o.measurement_durations.clone())
+            .unwrap_or_default();
+        let measurement_schedule: BTreeMap<String, f64> = raw
+            .get(MEASUREMENT_SCHEDULE_KEY)
+            .and_then(|o| o.measurement_schedule.clone())
+            .unwrap_or_default();
 
         // §3.5 (v0.7): the observed world graph, when the cycle was given one.
         let world: Option<WorldObservation> =
@@ -236,12 +321,15 @@ impl GraphMapper {
         let mut declaration = MeasurementDeclaration::new(
             &self.psi_id,
             observations,
-            global_ttc,
+            // §3.2b (v0.11): the declaration freezes **τ**, not the deprecated
+            // entity-minimum mirror — `None` when unmeasured.
+            tau_value,
             self.u0_prior_q,
             layer.as_ref().map(|l| l.resources.clone()).unwrap_or_default(),
             layer.as_ref().map(|l| l.groups.clone()).unwrap_or_default(),
             layer.as_ref().map(|l| l.rates.clone()).unwrap_or_default(),
             layer.as_ref().map(|l| l.mandate.clone()).unwrap_or_default(),
+            measurement_durations.clone(),
         );
         if world.is_some() {
             // The derived table replaces a declared one whenever a graph is in hand.
@@ -262,7 +350,7 @@ impl GraphMapper {
 
         let mut entities: HashMap<String, EntityState> = HashMap::new();
         for (eid, obs) in raw.iter() {
-            if eid == RESOURCE_LAYER_KEY || eid == WORLD_KEY {
+            if is_reserved_key(eid) {
                 continue;
             }
             let mz = measure_entity(
@@ -313,22 +401,39 @@ impl GraphMapper {
             resources.insert(rid.clone(), obs);
         }
         // v0.9.1: τ is stored as ResourceObservation under state.tau, not in resources.
+        // §3.2b (v0.11): the observation carries **τ** and its own provenance. The
+        // `source` names where it came from — a declared deadline set, the resource
+        // map, or the legacy entity-minimum — so a reader can tell a measured τ
+        // from the deprecated mirror instead of inferring it from the value.
+        let tau_source = if !declared_deadlines.is_empty() {
+            "deadlines"
+        } else if layer.as_ref().and_then(|l| l.tau_observation).is_some() {
+            "resource_map"
+        } else {
+            "entity_min"
+        };
         let tau_obs = ResourceObservation {
-            value: Some(global_ttc),
+            value: tau_value,
             unit: "us".to_string(),
             scale: 1.0,
-            source: "entity_min".to_string(),
+            source: tau_source.to_string(),
             aging_time: 0.0,
             ..Default::default()
         };
 
         let state = SystemStateMatrix {
-            global_time_to_collapse_mks: global_ttc,
+            // §3.2b (v0.11): the deprecated mirror is clamped — `0.0` for an unknown
+            // and for a passed deadline — and is not τ. It stays so the historical
+            // fixtures of `v0.6`–`v0.9.1` still read as they did.
+            global_time_to_collapse_mks: mirror_ttc,
             context_switch_cost: self.context_switch_cost,
             entities,
             psi: Some(reference),
             resources,
             tau: Some(tau_obs),
+            deadlines: declared_deadlines,
+            measurement_durations,
+            measurement_schedule,
         };
 
         // §3.5/§4.9: the observation itself, pinned by its own digest (§6.2), and the

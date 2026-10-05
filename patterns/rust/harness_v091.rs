@@ -89,6 +89,11 @@ pub fn run_harness_v091() -> Vec<String> {
             entities: HashMap::new(),
             psi: None,
             resources,
+            // §3.2b/§4.7 (v0.11): the historical fixture declares no deadlines, no
+            // durations and no schedule (§3.4.3).
+            deadlines: std::collections::BTreeMap::new(),
+            measurement_durations: std::collections::BTreeMap::new(),
+            measurement_schedule: std::collections::BTreeMap::new(),
             tau: Some(ResourceObservation {
                 value: Some(1000000.0),
                 unit: "us".to_string(),

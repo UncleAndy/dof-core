@@ -178,6 +178,60 @@ pub struct SystemStateMatrix {
     pub resources: HashMap<String, ResourceObservation>,
     /// §3.2b (v0.9.1): τ as ResourceObservation.
     pub tau: Option<ResourceObservation>,
+    /// §3.2b (v0.11): the active individual deadlines τ is derived from. τ is
+    /// `null` when **any** active deadline is unmeasured — never the minimum over
+    /// the measured ones alone, and never `0.0`.
+    pub deadlines: BTreeMap<String, Option<f64>>,
+    /// §4.7 (v0.11): the declared measurement durations `t_m`, `t_v` per lens.
+    /// Hashed ruler content: two states differing only in `t_m` produce different
+    /// `ruler_digest` (§3.4.1).
+    pub measurement_durations: BTreeMap<String, BTreeMap<String, f64>>,
+    /// §4.7 (v0.11): the declared **schedule** `t` per lens — when the measurement
+    /// is planned to happen. An undeclared schedule reads as `t = 0` (`u₀`).
+    pub measurement_schedule: BTreeMap<String, f64>,
+}
+
+/// §3.2b: τ as the calculus reads it — from the **resource map**, signed.
+///
+/// `state.tau` is the `tau` `ResourceObservation`. When it is absent or its
+/// `value` is `null`, τ is **unmeasured** (`None`), never the minimum over the
+/// measured deadlines alone and never `0.0`: an unmeasured active deadline may be
+/// the most urgent one, so acting on the budget the measured ones support is
+/// acting on a budget the state does not establish, and writing `0.0` invents a
+/// catastrophe (§3.1, §3.2b).
+///
+/// A **negative** value is a deadline that has passed, `|τ|` ago. It is a *known*
+/// state and MUST NOT be clamped to `0.0` or replaced by `None`, which means
+/// unmeasured only (§3.2b, §4.8b).
+///
+/// The deprecated mirror is read **only** when the state carries no resource-map τ
+/// and no deadline set, so it can never override a measurement (§3.2b).
+pub fn tau_of(state: &SystemStateMatrix) -> Option<f64> {
+    if let Some(obs) = state.tau.as_ref() {
+        return obs.value;
+    }
+    if !state.deadlines.is_empty() {
+        let mut best = f64::INFINITY;
+        for v in state.deadlines.values() {
+            match v {
+                Some(x) => {
+                    if *x < best {
+                        best = *x;
+                    }
+                }
+                None => return None,
+            }
+        }
+        return Some(best);
+    }
+    Some(state.global_time_to_collapse_mks)
+}
+
+/// §5's `t*` for a measurement of `t_meas_mks`: `None` when τ is unmeasured — an
+/// unknown budget is not a closed window, and the strict `t* > 0` rule of §5 is
+/// not applied to it (a τ measurement is governed by §4.8b instead).
+pub fn measurement_window(state: &SystemStateMatrix, t_meas_mks: f64) -> Option<f64> {
+    tau_of(state).map(|tau| tau - t_meas_mks)
 }
 
 #[derive(Clone, Debug)]
@@ -749,6 +803,13 @@ impl DofCalculusCore {
                 // consequences, and the resource side is decided by §4.8.
                 resources: current.resources.clone(),
                 tau: current.tau.clone(),
+                // §3.2b/§4.7 (v0.11): the deadlines, the durations and the
+                // schedule are ruler-level content of the same observation, so a
+                // simulated state carries them unchanged — `simulate` scores the
+                // DoF consequences of an option, not a new measurement regime.
+                deadlines: current.deadlines.clone(),
+                measurement_durations: current.measurement_durations.clone(),
+                measurement_schedule: current.measurement_schedule.clone(),
             },
             members,
         )

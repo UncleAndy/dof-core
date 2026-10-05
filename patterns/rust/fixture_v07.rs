@@ -243,6 +243,10 @@ pub fn entity_specs() -> HashMap<String, RawObservation> {
             lenses,
             resource_layer: None,
             world: None,
+            // §4.7 (v0.11): the historical fixture declares no measurement
+            // durations and no schedule — the ruler stays exactly as it was.
+            measurement_durations: None,
+            measurement_schedule: None,
         }
     }
     let mut m: HashMap<String, RawObservation> = HashMap::new();
@@ -393,6 +397,8 @@ pub fn scene(opts: &Options) -> HashMap<String, RawObservation> {
         lenses: LensObservation::default(),
         resource_layer: Some(resource_layer(opts)),
         world: None,
+        measurement_durations: None,
+        measurement_schedule: None,
     };
     m.insert(RESOURCE_LAYER_KEY.to_string(), layer_entry);
     if !opts.no_world {
@@ -404,6 +410,8 @@ pub fn scene(opts: &Options) -> HashMap<String, RawObservation> {
             lenses: LensObservation::default(),
             resource_layer: None,
             world: Some(world_observation(opts)),
+            measurement_durations: None,
+            measurement_schedule: None,
         };
         m.insert(WORLD_KEY.to_string(), world_entry);
     }
@@ -482,6 +490,10 @@ pub fn t1_scene() -> HashMap<String, RawObservation> {
             lenses: mentor,
             resource_layer: None,
             world: None,
+            // §4.7 (v0.11): the historical fixture declares no measurement
+            // durations and no schedule — the ruler stays exactly as it was.
+            measurement_durations: None,
+            measurement_schedule: None,
         },
     );
 
@@ -499,6 +511,10 @@ pub fn t1_scene() -> HashMap<String, RawObservation> {
             lenses: trainee,
             resource_layer: None,
             world: None,
+            // §4.7 (v0.11): the historical fixture declares no measurement
+            // durations and no schedule — the ruler stays exactly as it was.
+            measurement_durations: None,
+            measurement_schedule: None,
         },
     );
 

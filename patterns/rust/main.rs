@@ -58,6 +58,8 @@ fn obs(agency: f64, collapse: bool, ttc: f64, lenses: LensObservation) -> RawObs
         lenses,
         resource_layer: None,
         world: None,
+        measurement_durations: None,
+        measurement_schedule: None,
     }
 }
 

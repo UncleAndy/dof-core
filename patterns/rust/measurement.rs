@@ -224,10 +224,20 @@ pub fn total_budget_mks(t_m: f64, t_v: f64, t_a_plus: f64, t_a_minus: f64) -> f6
 }
 
 /// `u(t) = u₀^(1 − t/t*) · ε^(t/t*)` on `t ∈ [0, t*]` (§4.7).
-pub fn u_of_t(u0: f64, tau_mks: f64, t_meas_mks: f64, t_mks: f64) -> f64 {
-    let t_star = tau_mks - t_meas_mks;
+///
+/// §4.7/§10(au): an **unmeasured** τ prices the ignorance at `u₀` — no window is
+/// computable, so no deadline is being spent. A τ that is known but leaves no
+/// window (`t* <= 0`) prices it at `ε`, not at `u₀`: the `v0.9.1` branch returned
+/// `u₀` here, which put a jump of ~13 nats exactly where measurement stops being
+/// possible.
+pub fn u_of_t(u0: f64, tau_mks: Option<f64>, t_meas_mks: f64, t_mks: f64) -> f64 {
+    let tau = match tau_mks {
+        Some(v) => v,
+        None => return u0,
+    };
+    let t_star = tau - t_meas_mks;
     if t_star <= 0.0 {
-        return u0;
+        return EPSILON;
     }
     let t = t_mks.max(0.0).min(t_star);
     let w = t / t_star;
@@ -415,7 +425,10 @@ pub struct MeasurementDeclaration {
     pub psi_id: String,
     pub u0_prior_q: Option<f64>,
     pub entities: BTreeMap<String, LensObservation>,
-    pub tau_mks: f64,
+    /// §3.2b (v0.11): τ as the ruler froze it — `None` when **unmeasured**, which
+    /// is `null` and not `0.0`. A negative τ is a passed deadline and keeps its
+    /// magnitude.
+    pub tau_mks: Option<f64>,
     // §3.4.1 hashed content (v0.6): the ruler now includes the resource layer.
     pub resources: Vec<ResourceUnit>,
     pub groups: Vec<Vec<String>>,
@@ -432,6 +445,12 @@ pub struct MeasurementDeclaration {
     pub verdicts: BTreeMap<String, VerdictRecord>,
     pub means_class: Vec<String>,
     pub graph_procedure: String,
+    /// §3.4.1/§3.4.3 (v0.11): the declared measurement durations `t_m`, `t_v` per
+    /// lens. **Additive** hashed content: the key is omitted when the map is
+    /// empty, so a state that declares no duration hashes exactly as it did before
+    /// the field existed and the `v0.7`/`v0.8`/`v0.9.1` fingerprints are untouched,
+    /// while a state that *does* declare durations hashes them.
+    pub measurement_durations: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 impl MeasurementDeclaration {
@@ -439,12 +458,13 @@ impl MeasurementDeclaration {
     pub fn new(
         psi_id: &str,
         entities: BTreeMap<String, LensObservation>,
-        tau_mks: f64,
+        tau_mks: Option<f64>,
         u0_prior_q: Option<f64>,
         resources: Vec<ResourceUnit>,
         groups: Vec<Vec<String>>,
         rates: BTreeMap<String, Rate>,
         mandate: BTreeMap<String, MandateValue>,
+        measurement_durations: BTreeMap<String, BTreeMap<String, f64>>,
     ) -> Self {
         MeasurementDeclaration {
             psi_id: psi_id.to_string(),
@@ -461,6 +481,7 @@ impl MeasurementDeclaration {
             verdicts: BTreeMap::new(),
             means_class: Vec::new(),
             graph_procedure: String::new(),
+            measurement_durations,
         }
     }
 
@@ -540,6 +561,28 @@ impl MeasurementDeclaration {
             );
         }
         s.push(']');
+        s
+    }
+
+    /// JSON for the declared measurement durations: keys sorted (`BTreeMap`), every
+    /// value a fixed six-decimal string, exactly as every other float of the
+    /// canonical form (§3.4.1).
+    fn durations_json(durations: &BTreeMap<String, BTreeMap<String, f64>>) -> String {
+        let mut s = String::from("{");
+        for (i, (lens, durs)) in durations.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            let _ = write!(s, "\"{}\":{{", lens);
+            for (j, (name, value)) in durs.iter().enumerate() {
+                if j > 0 {
+                    s.push(',');
+                }
+                let _ = write!(s, "\"{}\":\"{:.6}\"", name, value);
+            }
+            s.push('}');
+        }
+        s.push('}');
         s
     }
 
@@ -624,7 +667,27 @@ impl MeasurementDeclaration {
             }
             s.push('}');
         }
-        let _ = write!(s, "}},\"freeze\":{{\"tau_mks\":\"{:.6}\"}}", self.tau_mks);
+        // §3.4.3 (v0.11): `measurement_durations` is hashed ruler content, and an
+        // **absent** map and an **empty** map hash alike — so the field is written
+        // only when it carries something, and the historical fixtures, which
+        // declare none, keep the digests of their releases. Every value is a fixed
+        // six-decimal string, exactly as every other float of the canonical form.
+        s.push_str("},\"freeze\":{");
+        if !self.measurement_durations.is_empty() {
+            s.push_str("\"measurement_durations\":");
+            s.push_str(&Self::durations_json(&self.measurement_durations));
+            s.push(',');
+        }
+        match self.tau_mks {
+            Some(v) => {
+                let _ = write!(s, "\"tau_mks\":\"{:.6}\"", v);
+            }
+            // An unmeasured τ MUST NOT be written as a number: `0.0` would be a
+            // measured catastrophe and a synthetic default a fabricated deadline
+            // (§3.2b).
+            None => s.push_str("\"tau_mks\":null"),
+        }
+        s.push('}');
         let _ = write!(s, ",\"graph_procedure\":\"{}\"", self.graph_procedure);
         s.push_str(",\"groups\":");
         s.push_str(&Self::groups_json(&self.groups));
