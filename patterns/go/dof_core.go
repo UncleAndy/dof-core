@@ -106,6 +106,19 @@ func TauOf(state *SystemStateMatrix) *float64 {
 	return &v
 }
 
+// MeasurementWindow is §5's `t*` for a measurement of `t_meas_mks`: `null` when τ
+// is unmeasured — an unknown budget is not a closed window, and the strict
+// `t* > 0` rule of §5 is not applied to it (a τ measurement is governed by §4.8b
+// instead). τ is read from the resource map, never from the deprecated mirror.
+func MeasurementWindow(state *SystemStateMatrix, tMeasMks float64) *float64 {
+	tau := TauOf(state)
+	if tau == nil {
+		return nil
+	}
+	w := *tau - tMeasMks
+	return &w
+}
+
 // MirrorTimeToCollapse is §3.1/§3.2b's deprecated mirror — clamped,
 // non-authoritative.
 //
@@ -746,7 +759,12 @@ type FundingResult struct {
 func (c *DOFCalculusCore) PlanFunding(state *SystemStateMatrix, option *ActionOption, groups [][]string, rates map[string]RateInfo, weights map[string]float64, cap *float64) FundingResult {
 	need := c.requirement(option)
 	means := state.Resources
-	tau := state.GlobalTimeToCollapseMks
+	// §3.2b/§4.8 (v0.11): τ is read from the resource map as a **signed** value —
+	// a negative τ is a passed deadline, not a zero — and `null` means unmeasured.
+	// The deprecated `global_time_to_collapse_mks` mirror is never an input to a
+	// rule (§3.1, §4.7, §4.8b): an unknown budget licenses no spending beyond the
+	// measured balance, so no exchange is used to cover a deficit.
+	tau := TauOf(state)
 	// The numeraire weights: used to choose an offer canonically and to express
 	// the mandate ceiling in one unit.
 	w := func(r string) float64 {
@@ -815,8 +833,8 @@ func (c *DOFCalculusCore) PlanFunding(state *SystemStateMatrix, option *ActionOp
 			if amountSource > math.Max(0.0, ResourceValue(srcObs, false)-spend[source]) {
 				continue // the price is not payable
 			}
-			if totalDuration+rateSpec.DurationMks > tau {
-				continue // the exchange does not fit in τ
+			if tau == nil || totalDuration+rateSpec.DurationMks > *tau {
+				continue // does not fit in τ (or τ is unknown: no budget to spend)
 			}
 			offers = append(offers, offer{cost: w(source) * amountSource,
 				duration: rateSpec.DurationMks, key: key, source: source,
@@ -1044,7 +1062,11 @@ func (c *DOFCalculusCore) isIncomplete(state *SystemStateMatrix, options []*Acti
 		if touched {
 			continue
 		}
-		if state.GlobalTimeToCollapseMks-cheapest > 0.0 {
+		// §4.7/§5 (v0.11): the window is read under τ from the resource map. An
+		// unknown τ has **no** window — `null`, not a closed one — so the strict
+		// `t* > 0` rule of §5 is not applied to it, and a resolvable unknown is
+		// not declared resolvable on a budget that was never measured.
+		if window := MeasurementWindow(state, cheapest); window != nil && *window > 0.0 {
 			return true
 		}
 	}

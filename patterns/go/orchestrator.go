@@ -17,11 +17,25 @@ func NewDOFOrchestrator(contextSwitchCost float64) *DOFOrchestrator {
 	}
 }
 
-func applyViabilityGate(options []*ActionOption, tau float64) ([]*ActionOption, []RemovedOption) {
+// applyViabilityGate is the §5 viability gate of `v0.9.1`, **retired in `v0.11`**
+// — kept for the historical harness, whose fixtures must stay reproducible.
+//
+// τ is `TauOf(state)`, never the deprecated mirror: a **null** τ is an unknown
+// budget, and §4.8b's null case admits only an option that measures τ. An unknown
+// budget never licenses acting on it, so every other candidate is barred.
+func applyViabilityGate(options []*ActionOption, tau *float64) ([]*ActionOption, []RemovedOption) {
 	viable := []*ActionOption{}
 	removed := []RemovedOption{}
 	for _, o := range options {
-		if o.EstimatedDurationMks <= tau {
+		if tau == nil {
+			if discovers(o, "tau") {
+				viable = append(viable, o)
+			} else {
+				removed = append(removed, RemovedOption{OptionID: o.OptionID, Gate: "viability"})
+			}
+			continue
+		}
+		if o.EstimatedDurationMks <= *tau {
 			viable = append(viable, o)
 		} else {
 			removed = append(removed, RemovedOption{OptionID: o.OptionID, Gate: "viability"})
@@ -30,8 +44,32 @@ func applyViabilityGate(options []*ActionOption, tau float64) ([]*ActionOption, 
 	return viable, removed
 }
 
-func (o *DOFOrchestrator) generate(state *SystemStateMatrix, tau float64) []*ActionOption {
-	if tau < o.FastPassThreshold {
+// discovers reports whether the option resolves the named resource (§4.7).
+func discovers(o *ActionOption, resource string) bool {
+	for _, d := range o.Discovers {
+		if d == resource {
+			return true
+		}
+	}
+	return false
+}
+
+// modeFor is §5's reactive-circuit mode, evaluated **once** on the observed τ
+// (§4.10): the threshold is deliberately not hypothesis-conditional, because its
+// only consequence is the mode and the Generator runs once.
+//
+// An unknown budget selects `FAST_PASS`: an unknown budget never licenses the
+// expensive path. This is the rule `TauOf`'s `null` feeds — reading the clamped
+// mirror instead would make an unknown τ indistinguishable from a passed one.
+func (o *DOFOrchestrator) modeFor(tau *float64) string {
+	if tau == nil || *tau < o.FastPassThreshold {
+		return "FAST_PASS"
+	}
+	return "DEEP_DIVERSIFICATION"
+}
+
+func (o *DOFOrchestrator) generate(state *SystemStateMatrix, tau *float64) []*ActionOption {
+	if tau == nil || *tau < o.FastPassThreshold {
 		return o.generator.SafeFallback(state, 1)
 	}
 	return o.generator.Synthesize(state, 5)
@@ -46,7 +84,10 @@ func (o *DOFOrchestrator) generate(state *SystemStateMatrix, tau float64) []*Act
 // insolvency (§4.8).
 func (o *DOFOrchestrator) gates(state *SystemStateMatrix, options []*ActionOption) ([]*ActionOption, []RemovedOption) {
 	decl := o.mapper.LastDeclaration
-	tau := state.GlobalTimeToCollapseMks
+	// §3.2b (v0.11): τ comes from the resource map — signed, `null` when
+	// unmeasured. The deprecated `global_time_to_collapse_mks` mirror is never an
+	// input to a rule (§3.1, §4.7, §4.8b).
+	tau := TauOf(state)
 	viable, removedViability := applyViabilityGate(options, tau)
 	var groups [][]string
 	var rates map[string]RateInfo
@@ -62,18 +103,17 @@ func (o *DOFOrchestrator) gates(state *SystemStateMatrix, options []*ActionOptio
 func (o *DOFOrchestrator) Step(raw map[string]interface{}) *ActionOption {
 	state := o.mapper.PollEnvironment(raw)
 	ctx := o.mapper.LastObservation
-	options, _ := o.gates(state, o.generate(state, state.GlobalTimeToCollapseMks))
+	options, _ := o.gates(state, o.generate(state, TauOf(state)))
 	return o.core.EvaluateAndSelect(state, options, ctx)
 }
 
 func (o *DOFOrchestrator) StepWithReport(raw map[string]interface{}) (*ActionOption, *DofReport) {
 	state := o.mapper.PollEnvironment(raw)
 	ctx := o.mapper.LastObservation
-	tau := state.GlobalTimeToCollapseMks
-	mode := "DEEP_DIVERSIFICATION"
-	if tau < o.FastPassThreshold {
-		mode = "FAST_PASS"
-	}
+	// §3.2b (v0.11): τ is read from the resource map — signed, and `null` when
+	// unmeasured. The deprecated mirror is never an input to a rule.
+	tau := TauOf(state)
+	mode := o.modeFor(tau)
 	options, allRemoved := o.gates(state, o.generate(state, tau))
 	selected := o.core.EvaluateAndSelect(state, options, ctx)
 
