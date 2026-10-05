@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -109,12 +110,36 @@ struct Verdict {
     std::string reason;
 };
 
+// One finite **simple directed path** of structurally admissible acts (§4.9):
+// `ids` is the edge sequence, `duration` its total duration, `delta` the sum of
+// its declared effects on the entity the path is enumerated for.
+//
+// Named `ReachPath`, not `PathCand`: `PathCand` in this file is an *exchange*
+// path (a sequence of quotes with a product), and the two are different
+// procedures over different graphs. Sharing the name would invite sharing the
+// sort order, which is exactly what §4.9's canonical witness must not inherit.
+struct ReachPath {
+    std::vector<std::string> ids;
+    double duration = 0.0;
+    double delta = 0.0;
+};
+
 // ------------------------------------------------------------------- graph
 struct WorldGraph {
     std::map<std::string, EntityNode> entities;
     std::vector<std::string> means;
     std::vector<ActEdge> acts;
     std::vector<ExchangeEdge> exchanges;
+
+    // Per-search scratch of §4.9. `enumeration_incomplete` is the only piece the
+    // verdict reads: an enumeration cut short by the implementation's own safety
+    // limit has NOT proved that no raising path exists, so the verdict it feeds
+    // must read `undetermined` rather than `proven_unreachable`. `mutable`
+    // because the verdict is a query — it is computed on a const graph, and the
+    // scratch is not part of the graph's value.
+    mutable bool enumeration_incomplete = false;
+    mutable int enumerated = 0;
+    std::optional<int> enumeration_safety_limit;
 
     std::set<std::string> means_set() const {
         std::set<std::string> out;
@@ -476,8 +501,150 @@ struct WorldGraph {
     }
 
     // ----------------------------------------------------- verdicts (§4.9)
+    // The structurally admissible acts, in canonical id order. Separate from
+    // `admissible_acts` so that the path procedure has one entry point and the
+    // pool count has another: the pool is what `admissible_seen` reports, the
+    // edges are what the enumeration walks.
+    std::vector<ActEdge> path_edges(const std::vector<std::string>& categories,
+                                    const std::optional<double>& horizon_mks) const {
+        std::vector<ActEdge> out = admissible_acts(categories, horizon_mks);
+        std::stable_sort(out.begin(), out.end(),
+                         [](const ActEdge& a, const ActEdge& b) { return a.id < b.id; });
+        return out;
+    }
+
+    // Enumerates every finite **simple directed path** of structurally admissible
+    // acts (§4.9).
+    //
+    // A path is a chain of acts joined by `target → source` (an act's outcome is
+    // what the next act starts from), with no node and no edge repeated — a
+    // *simple* path, never an arbitrary walk: a zero-duration cycle with a
+    // positive effect would otherwise pump `Δ_P(X)` without spending time, and
+    // `duration(P) = 0` would satisfy every horizon.
+    //
+    // The enumeration is exhaustive over the finite simple paths and carries no
+    // edge bound. §4.9's condition is an existential over finite simple directed
+    // paths and states no length limit, so an implementation that silently
+    // stopped at a fixed depth could report `proven_unreachable` for an entity a
+    // longer path restores — a verdict §4.2 turns into an exclusion. A
+    // `safety_limit`, when an implementation sets one, bounds the number of
+    // **explored nodes** for resource protection only; an enumeration that hits
+    // it is marked incomplete and the verdict then reads `undetermined`, never a
+    // proof of unreachability. The depth is bounded anyway by simplicity
+    // (`|P| <= |V(G)| - 1`) and by the horizon.
+    //
+    // Results are returned in canonical order — greater `Δ_P` first, then fewer
+    // edges, then the lexicographically smallest identifier sequence — so two
+    // conformant implementations report the same witness.
+    std::vector<ReachPath> reachability_paths(
+        const std::string& entity_id, const std::vector<std::string>& categories,
+        const std::optional<double>& horizon_mks,
+        const std::optional<int>& safety_limit) const {
+        enumeration_incomplete = false;
+        enumerated = 0;
+        std::vector<ReachPath> out;
+        if (categories.empty() || !horizon_mks) return out;
+        std::vector<ActEdge> edges = path_edges(categories, horizon_mks);
+        std::map<std::string, std::vector<ActEdge>> by_source;
+        for (const auto& a : edges) by_source[a.source].push_back(a);
+
+        std::vector<ReachPath> results;
+        std::function<void(const std::string&, std::set<std::string>,
+                           std::set<std::string>, std::vector<std::string>, double, double)>
+            walk;
+        walk = [&](const std::string& node, std::set<std::string> produced,
+                   std::set<std::string> seen_edges, std::vector<std::string> ids,
+                   double duration, double delta) {
+            // Record every prefix: a path need not be maximal, and a shorter
+            // prefix may be the one that lifts the entity off a known zero.
+            results.push_back(ReachPath{ids, duration, delta});
+            enumerated++;
+            if (safety_limit && enumerated > *safety_limit) {
+                enumeration_incomplete = true;
+                return;
+            }
+            auto it = by_source.find(node);
+            if (it == by_source.end()) return;
+            for (const auto& a : it->second) {
+                if (seen_edges.count(a.id) > 0) continue;  // no edge twice
+                // No NODE twice, the origin included. `produced` is seeded with
+                // the start vertex at every launch, so a path can neither return
+                // to its origin (`A -> B -> A`) nor act on itself (`A -> A`):
+                // both repeat a vertex and are therefore not simple paths.
+                if (produced.count(a.target) > 0) continue;
+                if (duration + a.duration_mks > *horizon_mks) continue;  // Σ ≤ T_rec
+                std::set<std::string> next_produced = produced;
+                next_produced.insert(a.target);
+                std::set<std::string> next_edges = seen_edges;
+                next_edges.insert(a.id);
+                std::vector<std::string> next_ids = ids;
+                next_ids.push_back(a.id);
+                double step = 0.0;
+                auto eff = a.effect.find(entity_id);
+                if (eff != a.effect.end()) step = eff->second;
+                walk(a.target, next_produced, next_edges, next_ids,
+                     duration + a.duration_mks, delta + step);
+            }
+        };
+        std::set<std::string> starts;
+        for (const auto& a : edges) starts.insert(a.source);
+        for (const auto& s : starts) {
+            std::set<std::string> seeded;
+            seeded.insert(s);
+            walk(s, seeded, {}, {}, 0.0, 0.0);
+        }
+        // Non-empty paths only: the empty path changes nothing and cannot raise
+        // a DoF.
+        for (const auto& r : results) {
+            if (!r.ids.empty()) out.push_back(r);
+        }
+        std::stable_sort(out.begin(), out.end(), [](const ReachPath& x, const ReachPath& y) {
+            const double qx = q6(x.delta), qy = q6(y.delta);
+            if (qx != qy) return qx > qy;
+            if (x.ids.size() != y.ids.size()) return x.ids.size() < y.ids.size();
+            return join_ids(x.ids) < join_ids(y.ids);
+        });
+        return out;
+    }
+
+    // Whether the last `reachability_paths` call finished. False means the
+    // implementation's own safety limit cut the search short, so the absence of a
+    // raising path is NOT a proof of unreachability.
+    bool enumeration_complete() const { return !enumeration_incomplete; }
+
+    // Sets this implementation's own protection bound for §4.9's search.
+    // `std::nullopt` (the default, and the normative behaviour of §4.9)
+    // enumerates every finite simple path: the existential the section states is
+    // over all of them and names no depth.
+    void set_enumeration_safety_limit(const std::optional<int>& limit) {
+        enumeration_safety_limit = limit;
+    }
+
+    // §4.9's verdict with the caller's own `DoF(X | h)`; `dof_before` is
+    // `std::nullopt` when the caller does not supply it and the verdict falls back
+    // to the DoF the graph mirrors for that entity (the degenerate case, not the
+    // rule: the verdict is a value of `(G, state_h)`).
     Verdict verdict(const std::string& entity_id, const std::vector<std::string>& categories,
                     const std::optional<double>& horizon_mks) const {
+        return verdict_with_dof(entity_id, categories, horizon_mks, std::nullopt);
+    }
+
+    // §4.9's rule, stated once.
+    //
+    // The condition is `DoF(X | h) + Δ_P(X) > 0` over a finite **simple** path of
+    // structurally admissible acts whose total duration fits `T_rec(X)`. For an
+    // entity at a known zero that reduces to `Δ_P(X) > 0`; for one already
+    // positive it is satisfied by the **trivial** path (`P` a single vertex,
+    // `Δ_P = 0`, duration 0), so a live entity is `reachable` without any path
+    // search — reading the rule as requiring a raising path in every case would
+    // make a live entity unrecoverable by construction.
+    //
+    // `proven_unreachable` is a claim of **completeness** — §4.2 turns it into an
+    // exclusion — so it is returned only when the enumeration actually finished.
+    Verdict verdict_with_dof(const std::string& entity_id,
+                             const std::vector<std::string>& categories,
+                             const std::optional<double>& horizon_mks,
+                             const std::optional<double>& dof_before) const {
         Verdict v;
         v.entity_id = entity_id;
         auto it = entities.find(entity_id);
@@ -501,24 +668,49 @@ struct WorldGraph {
             v.reason = "recovery horizon T_rec is not declared";
             return v;
         }
-        // The recoverability pool is NOT the entity's own repertoire.
+        double base = it->second.current_dof;
+        if (dof_before) base = *dof_before;
+        // The recoverability pool is NOT the entity's own repertoire: anyone's
+        // admissible act may raise X's DoF. V counts what X itself can do.
         std::vector<ActEdge> pool = admissible_acts(categories, horizon_mks);
-        std::vector<std::string> raising;
-        for (const auto& a : pool) {
-            auto eff = a.effect.find(entity_id);
-            if (eff != a.effect.end() && eff->second > 0.0) raising.push_back(a.id);
-        }
-        std::sort(raising.begin(), raising.end());
         v.admissible_seen = static_cast<int>(pool.size());
-        if (!raising.empty()) {
+        if (base > 0.0) {
             v.verdict = "reachable";
-            v.witness = raising;
-            v.reason = "an admissible act raises DoF within T_rec";
-        } else {
-            v.verdict = "proven_unreachable";
-            v.reason = "complete observation, no admissible act raises DoF";
+            v.reason = "DoF(X | h) > 0: the trivial path satisfies the condition (§4.9)";
+            return v;
         }
+        std::vector<ReachPath> paths =
+            reachability_paths(entity_id, categories, horizon_mks, enumeration_safety_limit);
+        if (!enumeration_complete()) {
+            v.verdict = "undetermined";
+            v.reason = "the path search was stopped at the implementation's safety "
+                       "limit, so absence of a raising path is not a proof (§4.9)";
+            return v;
+        }
+        for (const auto& p : paths) {
+            if (base + p.delta > 0.0) {
+                v.verdict = "reachable";
+                v.witness = p.ids;
+                v.reason = "a structurally admissible simple path raises DoF within T_rec";
+                return v;
+            }
+        }
+        v.verdict = "proven_unreachable";
+        v.reason = "complete observation, no structurally admissible simple path "
+                   "raises DoF within T_rec";
         return v;
+    }
+
+    // The canonical join of a path's identifier sequence, used only for the
+    // lexicographic tie-break: a separator that cannot occur inside an identifier
+    // (`\0`) so that `["a","b"]` and `["ab"]` cannot collide.
+    static std::string join_ids(const std::vector<std::string>& ids) {
+        std::string out;
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            if (i > 0) out.push_back('\0');
+            out += ids[i];
+        }
+        return out;
     }
 
     // ------------------------------------ collapse act witness (§4.2)

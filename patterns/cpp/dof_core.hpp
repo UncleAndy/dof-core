@@ -785,9 +785,28 @@ public:
         std::set<std::string> critical = critical_members(state, ctx);
         for (const auto& kv : state.entities) {
             const std::string& id = kv.first;
-            dof::Verdict before = ctx->world.verdict(id, ctx->means_class, ctx->horizon(id));
+            const EntityState& entity = kv.second;
+            // The verdict procedure runs twice over the SAME observation — once as
+            // observed, once with the option's closure applied — so a verdict can
+            // only move away from `reachable`, and the difference is computed
+            // rather than declared.
+            dof::Verdict before = ctx->world.verdict_with_dof(
+                id, ctx->means_class, ctx->horizon(id), entity.current_dof);
             if (before.verdict != "reachable") continue;
-            dof::Verdict after = closed_world.verdict(id, ctx->means_class, ctx->horizon(id));
+            // The second verdict reads the state the option LEAVES BEHIND — the
+            // counters the closure changed, with the lens values recomputed from
+            // them — and reads them **without** the option's `projected_dof_delta`.
+            // D2 asks "did the closure destroy a recovery path?", not "is the
+            // entity better off after the option's promised effect?" — the latter
+            // is NetDelta. Were the projection admitted here, an option could raise
+            // the after-state DoF with its own promise and buy back the very
+            // recoverability it destroys. That is why the base DoF of the second
+            // run is `dof_after_closure` and never `projected_dof`; a nullopt means
+            // the closure did not touch this entity, which then keeps its observed
+            // DoF.
+            std::optional<double> after_dof = dof_after_closure(entity, option, ctx);
+            dof::Verdict after = closed_world.verdict_with_dof(
+                id, ctx->means_class, ctx->horizon(id), after_dof);
             if (after.verdict == "reachable") continue;
             LostPathEntry row;
             row.entity_id = id;

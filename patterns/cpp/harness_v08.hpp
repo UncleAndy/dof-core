@@ -151,11 +151,16 @@ inline int run_harness_v08() {
     std::cout << "=== 6. §4.5: a path cut is a bar, and the third dimension cannot separate ===\n";
     CandidateVector vec_help = vector_of(core, state, ctx, t1_help());
     CandidateVector vec_rival = vector_of(core, state, ctx, t1_rival());
+    // `v0.11` §4.9: the condition is `DoF(X | h) + Δ_P(X) > 0`, and the **trivial**
+    // path is a finite simple path — so cutting a path does not make a *live*
+    // entity unreachable, and `D2` no longer fires for it. `D2` keeps its teeth
+    // exactly where it matters: an option that drives the entity to a **known
+    // zero** and closes its recovery — which is what `t1_rival` does, and the
+    // assertion below still holds for it.
     check7("t1_help: it cuts a path without destroying anything",
-           vec_help.d1 == 0 && vec_help.d2 == 1 && vec_help.d3 == 0, vec_str(vec_help));
+           vec_help.d1 == 0 && vec_help.d2 == 0 && vec_help.d3 == 0, vec_str(vec_help));
     std::vector<LostPathEntry> help_lost = core.lost_paths(state, t1_help(), ctx);
-    check7("t1_help: and the path it cuts is NOT the critical node's",
-           help_lost.size() == 1 && help_lost[0].entity_id == "trainee" && !help_lost[0].critical,
+    check7("t1_help: and no path is reported as lost", help_lost.empty(),
            std::to_string(help_lost.size()));
     check7("closing the mentor's act costs it a vector and destroys nothing",
            core.collapse_charges(state, t1_help(), ctx).empty() &&
