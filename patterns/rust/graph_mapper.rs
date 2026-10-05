@@ -450,6 +450,11 @@ impl GraphMapper {
                 observation_digest: w
                     .graph
                     .observation_digest(means_class, t_rec, counting_horizon),
+                // §3.6/§4.9 (v0.11): the observed reading carries no override — it
+                // reads the graph's own `DoF(X)`. A hypothesis reading installs its
+                // own numbers here via `with_dof`, and nothing else about the
+                // observation changes.
+                dof_override: None,
             });
             self.last_graph_problems =
                 verify_graph_derived(&declaration, &w.graph, counting_horizon);

@@ -107,15 +107,50 @@ pub struct ObservationContext {
     pub t_rec: BTreeMap<String, f64>,
     pub counting_horizon_mks: Option<f64>,
     pub observation_digest: String,
+    /// §3.6/§4.9/§4.10 (v0.11): `DoF(X | h)` — the per-entity degrees of freedom
+    /// **under one reading**, which the §4.9 verdict consumes. `None` means "read
+    /// the graph's own value", which is what the observed reading does; a
+    /// hypothesis reading supplies its own numbers here. Structural inputs — `G`,
+    /// the paths and their admissibility, `M(S)`, `T_rec(X)` — stay shared: only
+    /// the DoF is conditional.
+    pub dof_override: Option<HashMap<String, f64>>,
 }
 
 impl ObservationContext {
+    /// The reading's `DoF(X | h)` for one entity, or `None` when this context
+    /// carries no reading (§4.9).
+    pub fn dof_override_of(&self, entity_id: &str) -> Option<f64> {
+        self.dof_override
+            .as_ref()
+            .and_then(|m| m.get(entity_id).copied())
+    }
+
+    /// §3.6/§4.9: the same observation, read under one hypothesis's DoF.
+    ///
+    /// Every shared input is carried over untouched — the graph, `M(S)`, the
+    /// horizons, the observation digest — because §3.6 shares them by construction:
+    /// only `DoF(X | h)` differs between readings, and only it is replaced here.
+    pub fn with_dof(&self, dofs: HashMap<String, f64>) -> ObservationContext {
+        let mut clone = self.clone();
+        clone.dof_override = Some(dofs);
+        clone
+    }
+
     pub fn horizon(&self, entity_id: &str) -> Option<f64> {
         self.t_rec.get(entity_id).copied()
     }
+    /// §4.9: the verdict **under this reading**. The observed reading passes no
+    /// override and is therefore byte-identical to the `v0.9.1` call — the
+    /// conditional form is the general one and the observed form is its instance,
+    /// not a second rule (§3.6, §7 п.30).
     pub fn verdict(&self, entity_id: &str) -> String {
         self.world
-            .verdict(entity_id, &self.means_class, self.horizon(entity_id))
+            .verdict_with_dof(
+                entity_id,
+                &self.means_class,
+                self.horizon(entity_id),
+                self.dof_override_of(entity_id),
+            )
             .verdict
     }
     pub fn v_before(&self, entity_id: &str) -> usize {
@@ -413,17 +448,20 @@ impl ActionOption {
         self.closed_for(hypothesis_id).is_empty()
     }
 
-    /// Every closure list the option declares, in both forms. The §4.4 guards must
-    /// hold for **all** of them: an option whose declaration is well-formed under
-    /// one reading and malformed under another is malformed (§4.4).
+    /// Every closure list the option declares: one for a flat option, one per reading
+    /// for a per-hypothesis option (§3.3, §4.4). The declaration guards must hold
+    /// under **every** reading, so they range over these lists and never over the
+    /// flat field alone: an option whose declaration is well-formed under one reading
+    /// and malformed under another is malformed.
     pub fn all_closed_lists(&self) -> Vec<Vec<ClosedRef>> {
-        let mut out = vec![self.closed.clone()];
+        if self.closure_form() != "per_hypothesis" {
+            return vec![self.closed.clone()];
+        }
         let mut keys: Vec<&String> = self.closed_by_hypothesis.keys().collect();
         keys.sort();
-        for k in keys {
-            out.push(self.closed_by_hypothesis[k].clone());
-        }
-        out
+        keys.iter()
+            .map(|k| self.closed_by_hypothesis[*k].clone())
+            .collect()
     }
 
     /// Declare what the option closes (§3.3/§4.4). `is_reversible` is derived from
@@ -773,18 +811,23 @@ impl DofCalculusCore {
     /// from the counters. Only the Variety share moves, so the whole product moves by
     /// its ratio. `None` means the entity is not affected or its Variety lens was
     /// unmeasured.
-    pub fn dof_after_closure(
+    /// §4.10 (v0.11): the closure list is read **under `hypothesis_id`** — with a
+    /// per-hypothesis `closed` the same option destroys different transitions under
+    /// different readings, and a quantity of §4.3–§4.4 that read the flat list would
+    /// silently decide every reading by the observed one.
+    pub fn dof_after_closure_for(
         &self,
         entity: &EntityState,
         option: &ActionOption,
         ctx: &ObservationContext,
+        hypothesis_id: &str,
     ) -> Option<f64> {
         let measurement = entity.measurement.as_ref()?;
         let counters = measurement.variety_counters.as_ref()?;
         let var_before = measurement.psi.get("variety").copied().flatten()?;
         let v_env = counters.get("V_env").copied().unwrap_or(0.0);
         let v_before = ctx.v_before(&entity.entity_id);
-        let v_after = ctx.v_after_closure(&entity.entity_id, &option.closed);
+        let v_after = ctx.v_after_closure(&entity.entity_id, &option.closed_for(hypothesis_id));
         if v_after == v_before {
             return None; // this entity is not affected
         }
@@ -793,23 +836,43 @@ impl DofCalculusCore {
         ))
     }
 
-    /// The DoF this option would leave the entity with, closure included (§4.3). ONE
-    /// definition, used by both `simulate` and `collapse_charges`: if the charge were
-    /// computed from the raw delta while the index was computed from the closure-aware
-    /// value, an option that destroys an entity BY CLOSING ITS TRANSITIONS would be
-    /// scored as a collapse and charged as nothing — the structural gate of §4.5 would
-    /// then pass exactly the option it exists to stop.
-    pub fn projected_dof(
+    /// The **observed-reading** entry point (absence of a set is the observed
+    /// singleton, §3.6).
+    pub fn dof_after_closure(
+        &self,
+        entity: &EntityState,
+        option: &ActionOption,
+        ctx: &ObservationContext,
+    ) -> Option<f64> {
+        self.dof_after_closure_for(entity, option, ctx, crate::hypothesis::OBSERVED_HYPOTHESIS_ID)
+    }
+
+    /// The DoF this option would leave the entity with, closure included (§4.3),
+    /// **under the reading `hypothesis_id`**. ONE definition, used by both
+    /// `simulate` and `collapse_charges`: if the charge were computed from the raw
+    /// delta while the index was computed from the closure-aware value, an option
+    /// that destroys an entity BY CLOSING ITS TRANSITIONS would be scored as a
+    /// collapse and charged as nothing — the structural gate of §4.5 would then pass
+    /// exactly the option it exists to stop.
+    ///
+    /// Both the raw delta and the closure list are read **under `hypothesis_id`**
+    /// (§3.3, §4.4): a per-hypothesis option projects a different DoF under each
+    /// reading, and the closure the projection is corrected by must be the closure of
+    /// the same reading.
+    pub fn projected_dof_for(
         &self,
         entity: &EntityState,
         option: &ActionOption,
         ctx: Option<&ObservationContext>,
+        hypothesis_id: &str,
     ) -> f64 {
-        let add = option.projected_dof_delta.get(&entity.entity_id).copied().unwrap_or(0.0);
+        let add = option.delta_for(hypothesis_id, &entity.entity_id);
         let mut new_dof = Self::coerce_dof(entity.current_dof + add);
         if let Some(c) = ctx {
-            if !option.closed.is_empty() {
-                if let Some(recomputed) = self.dof_after_closure(entity, option, c) {
+            if !option.closed_for(hypothesis_id).is_empty() {
+                if let Some(recomputed) =
+                    self.dof_after_closure_for(entity, option, c, hypothesis_id)
+                {
                     new_dof = recomputed;
                 }
             }
@@ -817,20 +880,36 @@ impl DofCalculusCore {
         new_dof
     }
 
+    /// The observed-reading entry point of `projected_dof_for`.
+    pub fn projected_dof(
+        &self,
+        entity: &EntityState,
+        option: &ActionOption,
+        ctx: Option<&ObservationContext>,
+    ) -> f64 {
+        self.projected_dof_for(entity, option, ctx, crate::hypothesis::OBSERVED_HYPOTHESIS_ID)
+    }
+
     /// §4.4 guards: closing one's own execution path, or a false label with nothing
     /// closed. `None` when the option is conformant.
+    ///
+    /// The guards range over **every** closure list the option declares
+    /// (`all_closed_lists`), not over the flat field: an option whose declaration is
+    /// well-formed under one reading and malformed under another is malformed (§4.4).
     pub fn closure_error(&self, option: &ActionOption) -> Option<String> {
-        if !option.closed.is_empty() && !option.act_id.is_empty() {
-            for c in option.closed.iter() {
-                if c.kind == "act" && c.id == option.act_id {
-                    return Some(format!(
-                        "{}: closes its own execution path (§4.4 guard 1)",
-                        option.option_id
-                    ));
+        for lst in option.all_closed_lists() {
+            if !lst.is_empty() && !option.act_id.is_empty() {
+                for c in lst.iter() {
+                    if c.kind == "act" && c.id == option.act_id {
+                        return Some(format!(
+                            "{}: closes its own execution path (§4.4 guard 1)",
+                            option.option_id
+                        ));
+                    }
                 }
             }
         }
-        if option.closed.is_empty() && !option.is_reversible {
+        if option.closure_form() == "flat" && option.closed.is_empty() && !option.is_reversible {
             return Some(format!(
                 "{}: is_reversible=false with an empty closure list (§4.4 guard 2)",
                 option.option_id
@@ -840,8 +919,14 @@ impl DofCalculusCore {
     }
 
     /// §4.4: the reported flag is DERIVED — true exactly when nothing is closed.
+    ///
+    /// The flag is read under a **reading** (§4.10): with a per-hypothesis `closed`
+    /// the same option is reversible under one hypothesis and not under another, and
+    /// the robust reading of §4.5 key 3 is the conjunction over `H_plausible`
+    /// (`robust_reversible` in `conditional.rs`). This entry point is the observed
+    /// reading.
     pub fn is_reversible(&self, option: &ActionOption) -> bool {
-        option.closed.is_empty()
+        option.is_reversible_for(crate::hypothesis::OBSERVED_HYPOTHESIS_ID)
     }
 
     /// §6.3: the per-entity decomposition of a closure's price. A DECOMPOSITION of the
@@ -924,17 +1009,19 @@ impl DofCalculusCore {
     }
 
     /// Simulate an option's projected deltas into a new state and return it with the
-    /// **frozen** member set of `calc(S)` (§4.2).
-    pub fn simulate(
+    /// **frozen** member set of `calc(S)` (§4.2), **under the reading
+    /// `hypothesis_id`**.
+    pub fn simulate_for(
         &self,
         current: &SystemStateMatrix,
         option: &ActionOption,
         ctx: Option<&ObservationContext>,
+        hypothesis_id: &str,
     ) -> (SystemStateMatrix, BTreeSet<String>) {
         let members = self.calc_members(current, ctx);
         let mut simulated = current.entities.clone();
         for (eid, e_state) in current.entities.iter() {
-            let new_dof = self.projected_dof(e_state, option, ctx);
+            let new_dof = self.projected_dof_for(e_state, option, ctx, hypothesis_id);
             if let Some(ent) = simulated.get_mut(eid) {
                 ent.current_dof = new_dof;
             }
@@ -961,14 +1048,26 @@ impl DofCalculusCore {
         )
     }
 
-    /// §4.2: the counted entities a candidate drives to a known zero. The charge
-    /// depends on neither the Generator's candidate set nor the victim's
-    /// post-collapse prospects.
-    pub fn collapse_charges(
+    /// The **observed-reading** entry point of `simulate_for` (absence of a set is
+    /// the observed singleton, §3.6).
+    pub fn simulate(
         &self,
         current: &SystemStateMatrix,
         option: &ActionOption,
         ctx: Option<&ObservationContext>,
+    ) -> (SystemStateMatrix, BTreeSet<String>) {
+        self.simulate_for(current, option, ctx, crate::hypothesis::OBSERVED_HYPOTHESIS_ID)
+    }
+
+    /// §4.2: the counted entities a candidate drives to a known zero, **under the
+    /// reading `hypothesis_id`**. The charge depends on neither the Generator's
+    /// candidate set nor the victim's post-collapse prospects.
+    pub fn collapse_charges_for(
+        &self,
+        current: &SystemStateMatrix,
+        option: &ActionOption,
+        ctx: Option<&ObservationContext>,
+        hypothesis_id: &str,
     ) -> Vec<CollapseCharge> {
         let mut charges: Vec<CollapseCharge> = Vec::new();
         for eid in self.calc_members(current, ctx) {
@@ -982,7 +1081,7 @@ impl DofCalculusCore {
             // The projected value is the closure-aware one (§4.3): an option can
             // destroy a counted entity by closing its transitions while declaring no
             // delta at all, and that is exactly the case §4.5 must catch.
-            let new_dof = self.projected_dof(entity, option, ctx);
+            let new_dof = self.projected_dof_for(entity, option, ctx, hypothesis_id);
             // §4.2: a charge requires a *transition* into the zero, not a stay at it —
             // charging an entity that was already at zero would make every option
             // destructive in any state containing a recoverable zero.
@@ -994,6 +1093,16 @@ impl DofCalculusCore {
             }
         }
         charges
+    }
+
+    /// The **observed-reading** entry point of `collapse_charges_for`.
+    pub fn collapse_charges(
+        &self,
+        current: &SystemStateMatrix,
+        option: &ActionOption,
+        ctx: Option<&ObservationContext>,
+    ) -> Vec<CollapseCharge> {
+        self.collapse_charges_for(current, option, ctx, crate::hypothesis::OBSERVED_HYPOTHESIS_ID)
     }
 
     /// §4.5: removes options that destroy a counted entity while a charge-free
@@ -1079,7 +1188,7 @@ impl DofCalculusCore {
     }
 
     /// The entities this option drops out of a `reachable` verdict, line by line
-    /// (§4.5, §6.3).
+    /// (§4.5, §6.3), **under the reading `hypothesis_id`**.
     ///
     /// The verdict procedure runs twice over the SAME observation — once as
     /// observed, once with the option's closure applied — so a verdict can only
@@ -1087,21 +1196,28 @@ impl DofCalculusCore {
     /// declared. A lost witness is a loss: an entity that leaves `reachable` counts
     /// even where no exclusion follows from it, because §4.2 excludes only on a
     /// `proven_unreachable` verdict over a complete observation.
-    pub fn lost_paths(
+    ///
+    /// §4.10 (v0.11): the closure list is read **under the reading** — with a
+    /// per-hypothesis `closed` the same option destroys different transitions under
+    /// different readings, and a D2 that read the flat list would decide every
+    /// reading by the observed one.
+    pub fn lost_paths_for(
         &self,
         state: &SystemStateMatrix,
         option: &ActionOption,
         ctx: Option<&ObservationContext>,
+        hypothesis_id: &str,
     ) -> Vec<LostPathEntry> {
         let mut out: Vec<LostPathEntry> = Vec::new();
         let ctx = match ctx {
             Some(c) => c,
             None => return out,
         };
-        if option.closed.is_empty() {
+        let closed = option.closed_for(hypothesis_id);
+        if closed.is_empty() {
             return out;
         }
-        let closed_world = ctx.world.with_closed(&option.closed);
+        let closed_world = ctx.world.with_closed(&closed);
         let critical = self.critical_members(state, Some(ctx));
         let mut ids: Vec<String> = state.entities.keys().cloned().collect();
         ids.sort();
@@ -1149,8 +1265,46 @@ impl DofCalculusCore {
         out
     }
 
-    /// The keys of one candidate (§4.5): all of them, from quantities the earlier
-    /// releases already produce.
+    /// The **observed-reading** entry point of `lost_paths_for`.
+    pub fn lost_paths(
+        &self,
+        state: &SystemStateMatrix,
+        option: &ActionOption,
+        ctx: Option<&ObservationContext>,
+    ) -> Vec<LostPathEntry> {
+        self.lost_paths_for(state, option, ctx, crate::hypothesis::OBSERVED_HYPOTHESIS_ID)
+    }
+
+    /// The keys of one candidate (§4.5) **under the reading `hypothesis_id`**: all of
+    /// them, from quantities the earlier releases already produce.
+    ///
+    /// §4.10: every quantity that depends on a hypothesis — the simulated DoF, the
+    /// collapse charges, the lost paths and the reversibility — is read under the
+    /// SAME reading. A vector assembled from mixed readings is a number no
+    /// hypothesis produces, and it would be reported as one the reading did.
+    pub fn candidate_vector_for(
+        &self,
+        state: &SystemStateMatrix,
+        option: &ActionOption,
+        ctx: Option<&ObservationContext>,
+        current_index: f64,
+        hypothesis_id: &str,
+    ) -> CandidateVector {
+        let (simulated, members) = self.simulate_for(state, option, ctx, hypothesis_id);
+        let projected = self.calculate_system_dof(&simulated, Some(&members), ctx);
+        let lost = self.lost_paths_for(state, option, ctx, hypothesis_id);
+        let d3 = lost.iter().filter(|row| row.critical).count();
+        CandidateVector {
+            d1: self.collapse_charges_for(state, option, ctx, hypothesis_id).len(),
+            d2: lost.len(),
+            d3,
+            net_delta: self.net_delta(state, option, projected, current_index),
+            reversible: option.is_reversible_for(hypothesis_id),
+            option_id: option.option_id.clone(),
+        }
+    }
+
+    /// The **observed-reading** entry point of `candidate_vector_for`.
     pub fn candidate_vector(
         &self,
         state: &SystemStateMatrix,
@@ -1158,18 +1312,13 @@ impl DofCalculusCore {
         ctx: Option<&ObservationContext>,
         current_index: f64,
     ) -> CandidateVector {
-        let (simulated, members) = self.simulate(state, option, ctx);
-        let projected = self.calculate_system_dof(&simulated, Some(&members), ctx);
-        let lost = self.lost_paths(state, option, ctx);
-        let d3 = lost.iter().filter(|row| row.critical).count();
-        CandidateVector {
-            d1: self.collapse_charges(state, option, ctx).len(),
-            d2: lost.len(),
-            d3,
-            net_delta: self.net_delta(state, option, projected, current_index),
-            reversible: self.is_reversible(option),
-            option_id: option.option_id.clone(),
-        }
+        self.candidate_vector_for(
+            state,
+            option,
+            ctx,
+            current_index,
+            crate::hypothesis::OBSERVED_HYPOTHESIS_ID,
+        )
     }
 
     /// Staying put: the zero vector, `NetDelta = 0` by definition.
