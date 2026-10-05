@@ -589,8 +589,51 @@ impl MeasurementDeclaration {
     /// Canonical form (§3.4.3): UTF-8 JSON, keys sorted, no insignificant
     /// whitespace, non-integer numbers as fixed six-decimal strings.
     pub fn canonical_text(&self) -> String {
-        let mut s = String::new();
-        s.push_str("{\"entities\":{");
+        self.render(false)
+    }
+
+    /// §3.4.2/§3.4.3: the **ruler-level** content of the same declaration.
+    ///
+    /// Everything identical for every hypothesis of a cycle and for every option:
+    /// the procedure and its version, the lens set, the units and scales, the means
+    /// class `M(S)`, `T_rec(X)`, the derived groups, the observed rates with their
+    /// numeraire, the mandate, the `u₀` prior and the graph procedure identity.
+    ///
+    /// Three groups of fields are **excluded**, and each for a stated reason:
+    ///
+    /// * `entities` — the per-entity **lens counters**, which are precisely what a
+    ///   hypothesis varies (§3.6);
+    /// * `freeze` — τ, the measurement durations and the budgets, which are the
+    ///   hypothesis's own measured content;
+    /// * `verdicts` — the §4.9 **verdict**, which consumes `DoF(X | h)` and is
+    ///   therefore computed per hypothesis (§4.9). Its horizon `T_rec(X)` is
+    ///   type-derived and shared, but it does not have to be *hashed* for the
+    ///   readings to be comparable.
+    ///
+    /// The exclusion is what makes the ruler **one** object for every reading of a
+    /// cycle while `digest()` is not, and it lets a reader check that two readings
+    /// share the ruler byte for byte (§6.3, §7 п.25).
+    pub fn ruler_canonical_text(&self) -> String {
+        self.render(true)
+    }
+
+    /// §3.4.2: the conformance fingerprint of the ruler — the value a port
+    /// declares against its release.
+    pub fn ruler_digest(&self) -> String {
+        sha256_hex(self.ruler_canonical_text().as_bytes())
+    }
+
+    /// The single builder of both documents.
+    ///
+    /// `ruler` drops exactly the three hypothesis-level groups; nothing else
+    /// differs, so the two forms cannot drift apart in field order, escaping or
+    /// numeric rendering — the reason this is one function and not two.
+    fn render(&self, ruler: bool) -> String {
+        let mut s = String::from("{");
+        let mut started = false;
+        if !ruler {
+            Self::sep(&mut s, &mut started);
+            s.push_str("\"entities\":{");
         let mut first = true;
         for (eid, obs) in self.entities.iter() {
             if !first {
@@ -667,13 +710,18 @@ impl MeasurementDeclaration {
             }
             s.push('}');
         }
-        // §3.4.3 (v0.11): `measurement_durations` is hashed ruler content, and an
-        // **absent** map and an **empty** map hash alike — so the field is written
-        // only when it carries something, and the historical fixtures, which
-        // declare none, keep the digests of their releases. Every value is a fixed
-        // six-decimal string, exactly as every other float of the canonical form.
-        s.push_str("},\"freeze\":{");
-        if !self.measurement_durations.is_empty() {
+        s.push('}'); // the `entities` map
+        } // `if !ruler`: entities
+        if !ruler {
+            // §3.4.3 (v0.11): `measurement_durations` is hashed ruler content, and
+            // an **absent** map and an **empty** map hash alike — so the field is
+            // written only when it carries something, and the historical fixtures,
+            // which declare none, keep the digests of their releases. Every value is
+            // a fixed six-decimal string, exactly as every other float of the
+            // canonical form.
+            Self::sep(&mut s, &mut started);
+            s.push_str("\"freeze\":{");
+            if !self.measurement_durations.is_empty() {
             s.push_str("\"measurement_durations\":");
             s.push_str(&Self::durations_json(&self.measurement_durations));
             s.push(',');
@@ -688,19 +736,25 @@ impl MeasurementDeclaration {
             None => s.push_str("\"tau_mks\":null"),
         }
         s.push('}');
-        let _ = write!(s, ",\"graph_procedure\":\"{}\"", self.graph_procedure);
-        s.push_str(",\"groups\":");
+        } // `if !ruler`: freeze
+        Self::sep(&mut s, &mut started);
+        let _ = write!(s, "\"graph_procedure\":\"{}\"", self.graph_procedure);
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"groups\":");
         s.push_str(&Self::groups_json(&self.groups));
-        s.push_str(",\"lens_order\":[\"variety\",\"options\",\"constraint\"],\"mandate\":");
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"lens_order\":[\"variety\",\"options\",\"constraint\"],\"mandate\":");
         s.push_str(&Self::mandate_json(&self.mandate));
-        s.push_str(",\"mandate_cap\":");
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"mandate_cap\":");
         match self.mandate_cap {
             Some(c) => {
                 let _ = write!(s, "\"{:.6}\"", c);
             }
             None => s.push_str("null"),
         }
-        s.push_str(",\"means_class\":[");
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"means_class\":[");
         {
             let mut cls = self.means_class.clone();
             cls.sort();
@@ -711,25 +765,33 @@ impl MeasurementDeclaration {
                 let _ = write!(s, "\"{}\"", c);
             }
         }
-        s.push_str("],\"numeraire\":");
+        s.push(']'); // the `means_class` array
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"numeraire\":");
         match &self.numeraire {
             Some(n) => {
                 let _ = write!(s, "\"{}\"", n);
             }
             None => s.push_str("null"),
         }
-        s.push_str(",\"procedures\":{");
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"procedures\":{");
         let _ = write!(
             s,
             "\"constraint\":\"{}:constraint\",\"options\":\"{}:options\",\"options_blocks\":\"{}:{}\",\"variety\":\"{}:variety\"",
             self.psi_id, self.psi_id, self.psi_id, DERIVE_BLOCKS_PROCEDURE, self.psi_id
         );
-        let _ = write!(s, "}},\"psi_id\":\"{}\"", self.psi_id);
-        s.push_str(",\"rates\":");
+        s.push('}');
+        Self::sep(&mut s, &mut started);
+        let _ = write!(s, "\"psi_id\":\"{}\"", self.psi_id);
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"rates\":");
         s.push_str(&Self::rates_json(&self.rates));
-        s.push_str(",\"resources\":");
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"resources\":");
         s.push_str(&Self::resources_json(&self.resources));
-        s.push_str(",\"u0_prior_q\":");
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"u0_prior_q\":");
         match self.u0_prior_q {
             Some(q) => {
                 let _ = write!(s, "\"{:.6}\"", q);
@@ -737,8 +799,12 @@ impl MeasurementDeclaration {
             None => s.push_str("null"),
         }
         // §4.9 (v0.7): the verdicts and counters the declaration claims, and the
-        // numeraire weights those claims were computed with.
-        s.push_str(",\"verdicts\":{");
+        // numeraire weights those claims were computed with. §4.9 (v0.11): the
+        // verdict consumes `DoF(X | h)`, so it is hypothesis-level and is **not**
+        // part of the ruler-level document.
+        if !ruler {
+            Self::sep(&mut s, &mut started);
+            s.push_str("\"verdicts\":{");
         for (i, (eid, rec)) in self.verdicts.iter().enumerate() {
             if i > 0 {
                 s.push(',');
@@ -753,15 +819,29 @@ impl MeasurementDeclaration {
             // `v` is an INTEGER: a count, not a measurement.
             let _ = write!(s, ",\"v\":{},\"verdict\":\"{}\"}}", rec.v, rec.verdict);
         }
-        s.push_str("},\"weights\":{");
+            s.push('}');
+        } // `if !ruler`: verdicts
+        Self::sep(&mut s, &mut started);
+        s.push_str("\"weights\":{");
         for (i, (key, value)) in self.weights.iter().enumerate() {
             if i > 0 {
                 s.push(',');
             }
             let _ = write!(s, "\"{}\":\"{:.6}\"", key, value);
         }
-        s.push_str("}}");
+        s.push('}'); // the `weights` map
+        s.push('}'); // the document
         s
+    }
+
+    /// Emits the separator before a top-level block: the document is a JSON object,
+    /// so the first block carries no comma. `ruler` drops blocks, which is why the
+    /// comma cannot be written by the block itself.
+    fn sep(s: &mut String, started: &mut bool) {
+        if *started {
+            s.push(',');
+        }
+        *started = true;
     }
 
     /// Lowercase hex SHA-256 of the canonical text (§3.4.3).
