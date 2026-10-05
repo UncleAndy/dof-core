@@ -497,7 +497,7 @@ func canonicalize(obj interface{}) interface{} {
 	return fmt.Sprintf("%v", obj)
 }
 
-func (d *MeasurementDeclaration) CanonicalText() string {
+func (d *MeasurementDeclaration) canonicalDoc() map[string]interface{} {
 	entities := make(map[string]interface{})
 	for eid, obs := range d.Entities {
 		var variety interface{}
@@ -622,11 +622,16 @@ func (d *MeasurementDeclaration) CanonicalText() string {
 	doc["means_class"] = meansClass
 	doc["graph_procedure"] = d.GraphProcedure
 
-	canonDoc := canonicalize(doc)
+	return doc
+}
 
-	// HTML escaping MUST be off: Go's default encoder writes `>` as `\u003e`,
-	// which would make an observed rate key (`credit->energy`) hash differently
-	// from the identical UTF-8 bytes every other port writes.
+// renderCanonical serializes a canonical payload exactly as every port must.
+//
+// HTML escaping MUST be off: Go's default encoder writes `>` as `\u003e`, which
+// would make an observed rate key (`credit->energy`) hash differently from the
+// identical UTF-8 bytes every other port writes.
+func renderCanonical(doc map[string]interface{}) string {
+	canonDoc := canonicalize(doc)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -634,8 +639,51 @@ func (d *MeasurementDeclaration) CanonicalText() string {
 	return strings.TrimRight(buf.String(), "\n")
 }
 
+func (d *MeasurementDeclaration) CanonicalText() string {
+	return renderCanonical(d.canonicalDoc())
+}
+
+// RulerCanonicalText is §3.4.2/§3.4.3: the **ruler-level** content of the same
+// declaration — everything identical for every hypothesis of a cycle and for
+// every option: the procedure and its version, the lens set, the units and
+// scales, the means class `M(S)`, the derived groups, the observed rates with
+// their numeraire, the mandate, the `u₀` prior and the graph procedure identity.
+//
+// Three groups of fields are **excluded**, each for a stated reason:
+//
+//   - `entities` — the per-entity **lens counters**, which are precisely what a
+//     hypothesis varies (§3.6);
+//   - `freeze` — τ and the budgets, which are the hypothesis's own measured
+//     content;
+//   - `verdicts` — the §4.9 **verdict**, which consumes `DoF(X | h)` and is
+//     therefore computed per hypothesis (§4.9). Its horizon `T_rec(X)` is
+//     type-derived and shared, but it does not have to be *hashed* for the
+//     readings to be comparable, and the declaration carries no field for it:
+//     `v0.11` is additive, so the **full** `Digest()` stays byte-identical to
+//     the `v0.7`/`v0.8` ruler digest.
+//
+// Two readings of one cycle therefore have **equal** `RulerDigest()` and
+// **different** `Digest()`, which is what makes the `min_h` of §4.10 a
+// conformant output while a comparison of two different rulers is not.
+func (d *MeasurementDeclaration) RulerCanonicalText() string {
+	doc := d.canonicalDoc()
+	for _, field := range []string{"entities", "freeze", "verdicts"} {
+		delete(doc, field)
+	}
+	return renderCanonical(doc)
+}
+
 func (d *MeasurementDeclaration) Digest() string {
 	sum := sha256.Sum256([]byte(d.CanonicalText()))
+	return hex.EncodeToString(sum[:])
+}
+
+// RulerDigest is the shared comparability key of §3.4.2: equal for every
+// hypothesis of one cycle, and the only digest under which two readings may be
+// aggregated. Two states whose rulers differ MUST NOT be compared, however
+// close their per-hypothesis digests happen to be.
+func (d *MeasurementDeclaration) RulerDigest() string {
+	sum := sha256.Sum256([]byte(d.RulerCanonicalText()))
 	return hex.EncodeToString(sum[:])
 }
 
