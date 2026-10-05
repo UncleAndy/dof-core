@@ -61,6 +61,16 @@ struct ResourceLayer {
     std::map<std::string, dof::Rate> rates;                       // "from->to" -> {rate, duration_mks}
     std::vector<dof::ResourceUnit> resources;                     // declared units
     std::map<std::string, dof::MandateValue> mandate;             // declared mandate + limits
+    // §3.2b (v0.11): the active individual deadlines declared alongside the map.
+    // A `nullopt` entry is an UNMEASURED deadline and makes τ unknown — it is not
+    // absent, and the measured ones alone must not decide (§10(w), §10(ao)).
+    std::map<std::string, std::optional<double>> deadlines;
+    // §3.2b (v0.11): the `tau` observation of the resource map. A disengaged
+    // option means the map declares no τ at all; an engaged option with no value
+    // means the map declares τ **unmeasured** — which is neither absent nor zero.
+    // `std::optional<std::optional<double>>` is the three-case shape, and the three
+    // cases are exactly what §3.2b distinguishes.
+    std::optional<std::optional<double>> tau;
 };
 
 // Raw observation of one entity. A lens left empty is **unmeasured**: u(t)
@@ -75,7 +85,25 @@ struct RawObservation {
     std::optional<ResourceLayer> resource_layer;
     // Set on the reserved `world` entry only: the §3.5 observation of the world.
     std::optional<dof::WorldObservation> world;
+    // Set on the reserved `measurement_durations` entry only (§4.7, v0.11): the
+    // declared `t_m`, `t_v` per lens — ruler content, hashed by §3.4.1.
+    std::optional<std::map<std::string, std::map<std::string, double>>> measurement_durations;
+    // Set on the reserved `measurement_schedule` entry only (§4.7, v0.11): the
+    // declared `t` per lens.
+    std::optional<std::map<std::string, double>> measurement_schedule;
 };
+
+// §4.7 (v0.11): the reserved keys that carry ruler content instead of describing
+// an entity. Stated once: the mapper skips them in **every** entity pass, and a
+// pass that skips them by listing two names is how the third one ends up measured
+// as if it were an entity with a default τ of zero.
+inline const std::string kMeasurementDurationsKey = "measurement_durations";
+inline const std::string kMeasurementScheduleKey = "measurement_schedule";
+
+inline bool is_reserved_key(const std::string& name) {
+    return name == kResourceLayerKey || name == kWorldKey ||
+           name == kMeasurementDurationsKey || name == kMeasurementScheduleKey;
+}
 
 class GraphMapper {
     double context_switch_cost_;
@@ -120,7 +148,7 @@ public:
         // world/agent, not an entity, and a reserved entry left in this loop would
         // drag τ down to its own default of zero.
         for (const auto& kv : raw) {
-            if (kv.first == kResourceLayerKey || kv.first == kWorldKey) continue;
+            if (is_reserved_key(kv.first)) continue;
             observations[kv.first] = kv.second.lenses;
             if (!kv.second.is_collapse_source && kv.second.time_to_collapse_mks < min_ttc) {
                 min_ttc = kv.second.time_to_collapse_mks;
@@ -129,6 +157,41 @@ public:
 
         // Global τ is driven by the most urgent non-collapse-source entity (§3.2).
         const double global_ttc = std::isfinite(min_ttc) ? min_ttc : 1e15;
+
+        // §3.4.1/§3.4.2 (v0.11): the measurement durations are **declared ruler
+        // content**. They are read from the observation, never inferred (§4.7), and
+        // they are the same for every reading of the cycle — a hypothesis
+        // reinterprets what was measured, not how long the measuring takes.
+        std::map<std::string, std::map<std::string, double>> measurement_durations;
+        auto durs_it = raw.find(kMeasurementDurationsKey);
+        if (durs_it != raw.end() && durs_it->second.measurement_durations) {
+            measurement_durations = *durs_it->second.measurement_durations;
+        }
+        std::map<std::string, double> measurement_schedule;
+        auto sched_it = raw.find(kMeasurementScheduleKey);
+        if (sched_it != raw.end() && sched_it->second.measurement_schedule) {
+            measurement_schedule = *sched_it->second.measurement_schedule;
+        }
+
+        // §3.2b (v0.11): τ is read from the **resource map**, and the individual
+        // deadlines declared alongside it govern it. Three cases, in this order:
+        //   1. declared individual deadlines — τ is their minimum, and is unknown
+        //      when **any** active deadline is unmeasured: taking the minimum over
+        //      the measured ones alone would read an unknown timer as absent;
+        //   2. otherwise the `tau` observation of the map, which may be negative (a
+        //      passed deadline keeps its magnitude) or unmeasured;
+        //   3. otherwise the legacy entity-minimum, kept so the historical fixtures
+        //      of `v0.6`–`v0.9.1` still read as they did.
+        const std::map<std::string, std::optional<double>> no_deadlines;
+        const std::optional<std::optional<double>> no_tau_obs;
+        const std::map<std::string, std::optional<double>>& declared_deadlines =
+            layer ? layer->deadlines : no_deadlines;
+        const std::optional<std::optional<double>>& tau_obs = layer ? layer->tau : no_tau_obs;
+        const std::optional<double> tau_value =
+            resolve_tau(declared_deadlines, tau_obs, global_ttc);
+        // §3.2b/§10(s): the deprecated mirror is clamped and is **not** τ. It is
+        // `0.0` for an unknown and for a passed deadline, and equals τ otherwise.
+        const double mirror_ttc = mirror_time_to_collapse(tau_value);
 
         // §3.5 (v0.7): the observed world graph, when the cycle was given one.
         std::optional<dof::WorldObservation> world;
@@ -211,7 +274,10 @@ public:
         declaration.psi_id = psi_id;
         declaration.u0_prior_q = u0_prior_q;
         declaration.entities = observations;
-        declaration.tau_mks = global_ttc;
+        // §3.2b (v0.11): τ is signed and may be unmeasured; the declaration carries
+        // it as it is, and the canonical form renders an unmeasured τ as `null`.
+        declaration.tau_mks = tau_value;
+        declaration.measurement_durations = measurement_durations;
         if (layer) {
             declaration.resources = layer->resources;
             declaration.groups = dof::canonical_groups(layer->groups);
@@ -232,7 +298,7 @@ public:
 
         std::unordered_map<std::string, EntityState> entities;
         for (const auto& kv : raw) {
-            if (kv.first == kResourceLayerKey || kv.first == kWorldKey) continue;
+            if (is_reserved_key(kv.first)) continue;
             dof::EntityMeasurement m = dof::measure_entity(kv.first, kv.second.lenses, u0,
                                                            &means, &groups, &weights, mandate_cap);
             EntityState ent;
@@ -267,20 +333,33 @@ public:
         // v0.9.1: τ is stored as ResourceObservation under "tau".
         {
             ResourceObservation tau_obs;
-            tau_obs.value = global_ttc;
+            tau_obs.value = tau_value;
             tau_obs.unit = "us";
             tau_obs.scale = 1.0;
-            tau_obs.source = "entity_min";
+            // §3.2b (v0.11): the provenance says where τ came from. The legacy
+            // `entity_min` is only one of the three cases; reporting it for a τ
+            // derived from a declared deadline would misname the source.
+            tau_obs.source = declared_deadlines.empty() ? "entity_min" : "resource_map";
             tau_obs.aging_time = 0.0;
             resources["tau"] = tau_obs;
         }
 
         SystemStateMatrix state;
-        state.global_time_to_collapse_mks = global_ttc;
+        // §3.2b/§10(s): the deprecated mirror is clamped and is **not** τ; τ itself
+        // is carried beside it, signed and possibly unmeasured.
+        state.global_time_to_collapse_mks = mirror_ttc;
         state.context_switch_cost = context_switch_cost_;
         state.entities = std::move(entities);
         state.psi = dof::PsiReference{declaration.psi_id, declaration.digest()};
         state.resources = std::move(resources);
+        state.tau = ResourceObservation{};
+        state.tau->value = tau_value;
+        state.tau->unit = "us";
+        state.tau->scale = 1.0;
+        state.tau->source = declared_deadlines.empty() ? "entity_min" : "resource_map";
+        state.deadlines = declared_deadlines;
+        state.measurement_durations = measurement_durations;
+        state.measurement_schedule = measurement_schedule;
         last_declaration = declaration;
 
         // §3.5/§4.9: the observation itself, pinned by its own digest (§6.2), and

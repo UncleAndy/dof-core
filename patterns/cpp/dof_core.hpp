@@ -89,7 +89,80 @@ struct SystemStateMatrix {
     std::unordered_map<std::string, EntityState> entities;
     std::optional<dof::PsiReference> psi;  // frozen measurement ruler (§3.4)
     std::unordered_map<std::string, ResourceObservation> resources;
+    // §3.2b (v0.11): τ as a signed ResourceObservation. An absent **value** means
+    // unmeasured — which is neither a measured zero (a passed deadline keeps its
+    // magnitude) nor an absent timer.
+    std::optional<ResourceObservation> tau;
+    // §3.2b (v0.11): the active individual deadlines τ is derived from. An entry
+    // whose value is `nullopt` is an UNMEASURED deadline: τ is then unknown, and
+    // taking the minimum over the measured ones alone would read an unknown timer
+    // as absent.
+    std::map<std::string, std::optional<double>> deadlines;
+    // §4.7 (v0.11): the declared measurement durations `t_m`, `t_v` per lens —
+    // hashed ruler content of the same observation (§3.4.1).
+    std::map<std::string, std::map<std::string, double>> measurement_durations;
+    // §4.7 (v0.11): the declared **schedule** `t` per lens — when the measurement
+    // is planned to happen. An undeclared schedule reads as `t = 0` (`u₀`).
+    std::map<std::string, double> measurement_schedule;
 };
+
+// §3.2b (v0.11): τ is read from the **resource map**, never from the deprecated
+// mirror. The mirror is clamped and cannot tell "unknown" from "passed" — both read
+// `0.0` — so a rule that read it would price an unmeasured budget as a deadline
+// that has just expired, and a passed one as if it had never been set.
+inline std::optional<double> tau_of(const SystemStateMatrix& state) {
+    auto it = state.resources.find("tau");
+    if (it != state.resources.end()) return it->second.value;
+    if (state.tau) return state.tau->value;
+    return std::nullopt;
+}
+
+// §5's `t*` for a measurement of `t_meas_mks`: `nullopt` when τ is unmeasured — an
+// unknown budget is not a closed window, and the strict `t* > 0` rule of §5 is not
+// applied to it (a τ measurement is governed by §4.8b instead).
+inline std::optional<double> measurement_window(const SystemStateMatrix& state,
+                                                double t_meas_mks) {
+    const std::optional<double> tau = tau_of(state);
+    if (!tau) return std::nullopt;
+    return *tau - t_meas_mks;
+}
+
+// §3.2b/§10(s): the deprecated mirror is clamped and is **not** τ. Equal to τ when
+// τ is known and non-negative, and `0.0` when τ is negative or unmeasured.
+//
+// It exists because the historical harnesses read it, and because a report field
+// named "time to collapse" showing a raw negative τ would read as time running
+// backwards. It is never an input to a rule (§3.1, §4.7, §4.8b).
+inline double mirror_time_to_collapse(const std::optional<double>& tau) {
+    if (!tau || *tau < 0.0) return 0.0;
+    return *tau;
+}
+
+// §3.2b's three-case resolution of τ over an observation, stated once. It mirrors
+// the reference port exactly:
+//
+//  1. declared individual deadlines — their minimum, and **unknown** when any of
+//     them is unmeasured. Taking the minimum over the measured ones alone would
+//     read an unknown timer as absent, and the unmeasured one may be the most
+//     urgent (§10(w), §10(ao));
+//  2. otherwise the `tau` observation of the map — signed, so a passed deadline
+//     keeps its magnitude, and unmeasured when the map says the value is unknown;
+//  3. otherwise the legacy entity-minimum, so the historical fixtures of
+//     `v0.6`–`v0.9.1` still read as they did.
+inline std::optional<double> resolve_tau(
+    const std::map<std::string, std::optional<double>>& deadlines,
+    const std::optional<std::optional<double>>& tau_obs, double legacy) {
+    if (!deadlines.empty()) {
+        double best = std::numeric_limits<double>::infinity();
+        for (const auto& kv : deadlines) {
+            if (!kv.second) return std::nullopt;  // an active deadline is unmeasured
+            if (*kv.second < best) best = *kv.second;
+        }
+        return best;
+    }
+    if (tau_obs) return *tau_obs;
+    return legacy;
+}
 
 struct ActionOption {
     std::string option_id;

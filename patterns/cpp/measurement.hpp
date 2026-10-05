@@ -312,11 +312,18 @@ inline double total_budget_mks(double t_m, double t_v, double t_a_plus, double t
 }
 
 // u(t) = u₀^(1 − t/t*) · ε^(t/t*) on t ∈ [0, t*] (§4.7).
-inline double u_of_t(double u0, double tau_mks, double t_meas_mks, double t_mks = 0.0) {
-    double t_star = tau_mks - t_meas_mks;
-    if (t_star <= 0.0) return u0;
-    double t = std::max(0.0, std::min(t_mks, t_star));
-    double w = t / t_star;
+//
+// §4.7/§10(au): an **unmeasured** τ prices the ignorance at `u₀` — no window is
+// computable, so no deadline is being spent. A τ that is known but leaves no window
+// (`t* <= 0`) prices it at `ε`, not at `u₀`: the `v0.9.1` branch returned `u₀` here,
+// which put a jump of ~13 nats exactly where measurement stops being possible.
+inline double u_of_t(double u0, const std::optional<double>& tau_mks, double t_meas_mks,
+                     double t_mks = 0.0) {
+    if (!tau_mks) return u0;
+    const double t_star = *tau_mks - t_meas_mks;
+    if (t_star <= 0.0) return kEpsilon;
+    const double t = std::max(0.0, std::min(t_mks, t_star));
+    const double w = t / t_star;
     return std::pow(u0, 1.0 - w) * std::pow(kEpsilon, w);
 }
 
@@ -424,7 +431,12 @@ struct MeasurementDeclaration {
     std::string psi_id = "perception-v1";
     std::optional<double> u0_prior_q;
     std::map<std::string, LensObservation> entities;
-    double tau_mks = 0.0;
+    // §3.2b (v0.11): τ is signed and may be **unmeasured**. `nullopt` is not a
+    // measured zero: a passed deadline keeps its magnitude (and is negative), while
+    // an unmeasured τ has no magnitude at all. The canonical form renders the two
+    // differently — `null` versus a six-decimal string — so a port that stored τ as
+    // a plain double would report an unmeasured budget as a passed deadline.
+    std::optional<double> tau_mks;
     // §3.4.1 hashed content (v0.6): the ruler now includes the resource layer.
     std::vector<ResourceUnit> resources;                    // sorted by id when hashed
     std::vector<std::vector<std::string>> groups;           // derived exchange groups
@@ -441,6 +453,56 @@ struct MeasurementDeclaration {
     std::map<std::string, VerdictRecord> verdicts;
     std::vector<std::string> means_class;
     std::string graph_procedure;
+    // §3.4.1/§3.4.2 (v0.11): the declared measurement durations `t_m`, `t_v` per
+    // lens — **ruler content**, not a per-reading input. A hypothesis reinterprets
+    // what was measured; it may not reinterpret how long the measuring takes, or
+    // `T_meas` (and hence `t*`) would differ between readings that claim one ruler.
+    std::map<std::string, std::map<std::string, double>> measurement_durations;
+
+    // §3.4.1/§3.4.3 (v0.11): the `freeze` block, with the declared measurement
+    // durations when there are any.
+    //
+    // An undeclared duration set is ONE condition — the procedure is undeclared and
+    // the window uncomputable — so an absent map and an empty one MUST hash alike,
+    // and the key is omitted when empty. That is also what keeps the field
+    // additive: a state that declares no duration hashes exactly as it did before
+    // the field existed.
+    //
+    // Key order is the canonical one (alphabetical, as in every other port's
+    // encoder): `measurement_durations` precedes `tau_mks`. Every number is a fixed
+    // six-decimal string (`f6`), so a declared duration is hashed exactly like a
+    // scale, a rate or `tau_mks`; passing raw doubles would render them as JSON
+    // numbers and move this port's digest away from the reference's.
+    std::string freeze_json() const {
+        std::ostringstream os;
+        if (!measurement_durations.empty()) {
+            os << "\"measurement_durations\":{";
+            bool first_lens = true;
+            for (const auto& kv : measurement_durations) {
+                if (!first_lens) os << ",";
+                first_lens = false;
+                os << quote(kv.first) << ":{";
+                bool first_key = true;
+                for (const auto& d : kv.second) {
+                    if (!first_key) os << ",";
+                    first_key = false;
+                    os << quote(d.first) << ":" << quote(f6(d.second));
+                }
+                os << "}";
+            }
+            os << "},";
+        }
+        os << "\"tau_mks\":";
+        if (tau_mks) {
+            os << quote(f6(*tau_mks));
+        } else {
+            // §3.2b: an unmeasured τ is `null`, never a zero. A zero would read as
+            // a passed deadline and would make every option with a positive
+            // duration non-viable for the wrong reason.
+            os << "null";
+        }
+        return os.str();
+    }
 
     double u0() const { return u0_from_prior(u0_prior_q); }
 
@@ -644,7 +706,7 @@ struct MeasurementDeclaration {
             }
             os << "}";
         }
-        os << "},\"freeze\":{\"tau_mks\":" << quote(f6(tau_mks)) << "}"
+        os << "},\"freeze\":{" << freeze_json() << "}"
            << ",\"graph_procedure\":" << quote(graph_procedure)
            << ",\"groups\":" << groups_json()
            << ",\"lens_order\":[\"variety\",\"options\",\"constraint\"]"
