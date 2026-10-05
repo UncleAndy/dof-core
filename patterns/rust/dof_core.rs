@@ -373,6 +373,13 @@ impl ActionOption {
         if nested && !flat {
             return "per_hypothesis";
         }
+        // Both forms filled: **invalid**, never a merge (§3.3, §10(B)). Reading
+        // the pair as flat would score a per-hypothesis option as if it had one
+        // effect under every reading, which is precisely the drift this decision
+        // exists to prevent.
+        if flat && nested {
+            return "invalid";
+        }
         // An option declaring no delta at all is the flat form: the empty map is a
         // flat map, and reading it as "invalid" would refuse every baseline.
         "flat"
@@ -387,6 +394,12 @@ impl ActionOption {
         }
         if nested && !flat {
             return "per_hypothesis";
+        }
+        // Both forms filled: **invalid** (§4.4). The guards of §4.4 range over
+        // every list the option declares, and an option that declares two
+        // contradictory closure lists under one reading has not declared a closure.
+        if flat && nested {
+            return "invalid";
         }
         "flat"
     }

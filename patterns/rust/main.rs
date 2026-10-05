@@ -4,10 +4,12 @@
 
 mod conditional;
 mod dof_core;
+mod fixture_v011;
 mod fixture_v07;
 mod generator;
 mod graph_mapper;
 mod hypothesis;
+mod harness_v011;
 mod harness_v07;
 mod harness_v08;
 mod harness_v091;
@@ -755,6 +757,7 @@ fn run_harness_v06() -> Vec<String> {
 fn main() {
     let which = std::env::args().nth(1).unwrap_or_else(|| "v08".to_string());
     let failures = match which.as_str() {
+        "v011" => harness_v011::run_harness_v011(),
         "v091" => harness_v091::run_harness_v091(),
         "v08" => harness_v08::run_harness_v08(),
         "v07" => harness_v07::run_harness_v07(),
@@ -782,7 +785,7 @@ fn main() {
         }
         other => {
             println!(
-                "unknown harness {:?}: expected v091, v08 (default), v07, v06, dump or payload",
+                "unknown harness {:?}: expected v011, v091, v08 (default), v07, v06, dump or payload",
                 other
             );
             std::process::exit(2);

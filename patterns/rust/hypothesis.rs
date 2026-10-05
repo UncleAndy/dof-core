@@ -72,10 +72,14 @@ impl Default for HypothesisSet {
 }
 
 /// The declared coverage of a set, with §3.6's cautious default.
+///
+/// An **empty** claim reads as `partial` exactly like an absent one: a set that
+/// did not say how much of the space it covers has not claimed to cover it, and
+/// inferring `complete` from silence is the inference §3.6 forbids.
 pub fn coverage_of(hset: Option<&HypothesisSet>) -> String {
     match hset {
-        Some(h) => h.coverage.clone(),
-        None => "partial".to_string(),
+        Some(h) if !h.coverage.is_empty() => h.coverage.clone(),
+        _ => "partial".to_string(),
     }
 }
 
@@ -265,8 +269,15 @@ pub fn same_state(a: &SystemStateMatrix, b: &SystemStateMatrix) -> bool {
             (None, None) => {}
             (Some(ma), Some(mb)) => {
                 for lens in LENS_ORDER.iter() {
+                    // An unmeasured lens under BOTH readings is the same measured
+                    // content: `None` is "never measured", not a value to compare.
+                    // Reading the pair as a difference would declare two identical
+                    // states different, and rule (4) of §3.6 — "the observed state
+                    // MUST be one of the readings" — could then never hold for any
+                    // set whose fixture leaves a lens unmeasured.
                     match (ma.psi.get(*lens), mb.psi.get(*lens)) {
                         (None, None) => {}
+                        (Some(None), Some(None)) => {}
                         (Some(Some(x)), Some(Some(y))) => {
                             if (x - y).abs() > HYPOTHESIS_TOLERANCE {
                                 return false;

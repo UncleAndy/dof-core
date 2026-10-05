@@ -245,6 +245,12 @@ if [ -d "$REPO/patterns/rust" ]; then
         report_v07 rust-v07 "$OUT_DIR/rust_v07.out"
         "$OUT_DIR/dof_rust" v06 > "$OUT_DIR/rust_v06.out" 2>&1
         report_historical rust-v06 "$OUT_DIR/rust_v06.out"
+        if [ -f "$REPO/patterns/rust/harness_v011.rs" ]; then
+            "$OUT_DIR/dof_rust" v011 > "$OUT_DIR/rust_v011.out" 2>&1
+            report_v011 rust-v011 "$OUT_DIR/rust_v011.out"
+        else
+            printf '%-14s   (v0.11 harness absent — pending)\n' rust-v011
+        fi
     fi
 fi
 
