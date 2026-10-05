@@ -688,11 +688,19 @@ class DOFCalculusCore:
         where no exclusion follows from it, because §4.2 excludes only on a
         `proven_unreachable` verdict over a complete observation.
 
-        The verdict consumes `DoF(X | h)` (§4.9), so the second verdict is run
-        **on the after-state of the same reading** — closures applied and the
-        option's own declared delta for that reading *plus* the closure factored
-        in as §4.3 prescribes. An after-state computed without the delta would let
-        an option buy back the recoverability it destroys (§10(J), fixture `ae`).
+        The second run reads the **state the option leaves behind** — the pruned graph
+        `with_closed(o.closed)` *and* the counters the closure changed, with the
+        lens values recomputed from them (§4.1, §4.4, §4.6) — and it reads them
+        **without** the option's `projected_dof_delta`. The declared benefit of the
+        option is already measured by `NetDelta`; were it admitted into the
+        after-state, an option could raise the after-state `DoF` with its own
+        projection and buy back the very recoverability it destroys, which is the
+        separation `D2` exists to keep (§4.5, §7 item 34). So the base `DoF` of the
+        second verdict is `_dof_after_closure`, never `_projected_dof`: `D2` asks
+        *"did the closure destroy a recovery path?"*, not *"is the entity better
+        off after the option's promised effect?"* — the latter is `NetDelta`, and
+        one cannot substitute for the other. An entity the closure does not touch
+        keeps its observed `DoF`, since nothing moved it.
         """
         closed = option.closed_for(h_id)
         if ctx is None or not closed:
@@ -708,8 +716,11 @@ class DOFCalculusCore:
                                        ent.current_dof)
             if before.verdict != "reachable":
                 continue
+            after_dof = self._dof_after_closure(ent, option, ctx, h_id)
+            if after_dof is None:
+                after_dof = ent.current_dof   # the closure does not touch this entity
             after = closed_world.verdict(e_id, ctx.means_class, ctx.horizon(e_id),
-                                         self._projected_dof(ent, option, ctx, h_id))
+                                         after_dof)
             if after.verdict == "reachable":
                 continue
             rows.append({"entity_id": e_id, "verdict_before": before.verdict,

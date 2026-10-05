@@ -164,12 +164,34 @@ def test_two_readings():
     check("(z) the structurally admissible path set is the same",
           struct_a == struct_b and len(struct_a) > 0, str(struct_a[:3]))
 
-    # (y) the verdict is per reading.
-    v_obs = ctx.world.verdict("robot", ctx.means_class, ctx.horizon("robot"), 0.5)
-    v_zero = ctx.world.verdict("robot", ctx.means_class, ctx.horizon("robot"), 0.0)
-    check("(y) a live entity is reachable", v_obs.verdict == "reachable", v_obs.verdict)
+    # (y) the verdict is per reading. The witness is a genuine **simple path**:
+    # `act_medkit` runs `adult -> revivable`, so the path visits two vertices and
+    # repeats none. The entity's own repertoire is a *different* question (§4.6's
+    # `V` counts it), and §4.9 does not care who acts — which is why `revivable`,
+    # with zero response vectors of its own, is the entity that tests this.
+    h_rec = ctx.horizon("revivable")
+    v_obs = ctx.world.verdict("revivable", ctx.means_class, h_rec, 0.5)
+    v_zero = ctx.world.verdict("revivable", ctx.means_class, h_rec, 0.0)
+    check("(y) a live entity is reachable", v_obs.verdict == "reachable",
+          f"{v_obs.verdict} {v_obs.witness}")
     check("(y) the same entity at a known zero with a raising path is reachable",
-          v_zero.verdict == "reachable", v_zero.verdict)
+          v_zero.verdict == "reachable", f"{v_zero.verdict} {v_zero.witness}")
+    check("(y) and the witness is a simple path, not the entity acting on itself",
+          list(v_zero.witness) == ["act_medkit"], str(v_zero.witness))
+    # A self-act repeats its own vertex, so it is not a simple path and cannot
+    # be a §4.9 witness. `robot`'s repertoire is nine self-acts (`r1..r9`) and
+    # nothing else acts on it, so the entity is NOT reachable by a path — it is
+    # reachable by the *trivial* path alone, and only while its DoF is positive.
+    check("(y) an entity whose only acts are self-acts is not reachable at zero",
+          ctx.world.verdict("robot", ctx.means_class, ctx.horizon("robot"), 0.0
+                            ).verdict == "proven_unreachable")
+    check("(y) but the trivial path keeps it reachable while it is positive",
+          ctx.world.verdict("robot", ctx.means_class, ctx.horizon("robot"), 0.5
+                            ).verdict == "reachable")
+    check("(y) no enumerated path repeats a produced vertex",
+          all(len({ctx.world._act(i).target for i in p}) == len(p)
+              for p, _d, _x in
+              ctx.world.reachability_paths("revivable", ctx.means_class, h_rec)))
     check("(y) but `passive` is proven unreachable",
           ctx.world.verdict("passive", ctx.means_class, ctx.horizon("passive"), 0.0
                             ).verdict == "proven_unreachable")
@@ -215,6 +237,30 @@ def test_closure_bars():
     open_option = opt("touch_nothing")
     check("(ae) an option closing nothing loses nothing",
           core.lost_paths(state, open_option, ctx) == [])
+
+    # §4.5, §7 item 34: the second verdict reads the after-state **without** the
+    # option's `projected_dof_delta`. This is the counterexample that separates
+    # the two readings: an option closes `medkit` — the only act lifting
+    # `revivable` off its known zero — and *also* declares a gain on that very
+    # entity. Admit the delta into the after-state and the loss disappears: the
+    # option buys back with its own projection the recoverability it destroys,
+    # and `D2` reports `0` for a destroyed recovery path.
+    h_rec = ctx.horizon("revivable")
+    claimed = ctx.world.with_closed([ClosedRef(kind="mean", id=fixture_v07.MEDKIT)]
+                                    ).verdict("revivable", ctx.means_class, h_rec, 0.5)
+    check("(ae) the counterexample is real: with the projection admitted the loss vanishes",
+          claimed.verdict == "reachable", claimed.verdict)
+    compensating = opt("close_medkit_and_claim_a_gain",
+                       projected_dof_delta={"revivable": 0.5},
+                       closed=[ClosedRef(kind="mean", id=fixture_v07.MEDKIT)])
+    rows = core.lost_paths(state, compensating, ctx)
+    check("(ae) a self-declared gain cannot buy back the path it closes",
+          [r["entity_id"] for r in rows] == ["revivable"], str(rows))
+    check("(ae) and the after-verdict is not `reachable`",
+          rows and rows[0]["verdict_after"] != "reachable", str(rows))
+    check("(ae) while the projected DoF of the same entity stays positive",
+          core._projected_dof(state.entities["revivable"], compensating, ctx) > 0.0,
+          str(core._projected_dof(state.entities["revivable"], compensating, ctx)))
 
 
 # ---------------------------------------------------------------- e, f, g, i

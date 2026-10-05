@@ -288,7 +288,8 @@ class WorldGraph(BaseModel):
         return sorted(self.admissible_acts(categories, horizon_mks), key=lambda a: a.id)
 
     def reachability_paths(self, entity_id: str, categories: Optional[Sequence[str]],
-                           horizon_mks: Optional[float], max_edges: int = 6
+                           horizon_mks: Optional[float],
+                           safety_limit: Optional[int] = None
                            ) -> List[Tuple[List[str], float, float]]:
         """Every finite **simple directed path** of structurally admissible acts.
 
@@ -298,16 +299,25 @@ class WorldGraph(BaseModel):
         positive effect would otherwise pump `Δ_P(X)` without spending time, and
         `duration(P) = 0` would satisfy every horizon (§3.5, item 45).
 
+        The enumeration is **exhaustive over the finite simple paths** and carries
+        no edge bound. §4.9's condition is an existential over *finite simple
+        directed* paths and states no length limit, so an implementation that
+        silently stopped at a fixed depth could report `proven_unreachable` for an
+        entity that a longer path restores — a verdict §4.2 turns into an
+        exclusion. `safety_limit`, when an implementation sets one, bounds the
+        number of **explored nodes** for resource protection only; an enumeration
+        that hits it is marked **incomplete** and `verdict()` then reads
+        `undetermined`, never a proof of unreachability — the honest answer when
+        the search did not finish. The depth is bounded anyway by simplicity
+        (`|P| <= |V(G)| - 1`) and by the horizon.
+
         Returns `(act_ids, duration_mks, delta_P)` for every path whose total
         duration fits inside `T_rec(X)`, in canonical order: greater `Δ_P` first,
         then fewer edges, then lexicographically smallest identifier sequence — so
         two conformant implementations report the same witness (§4.9).
-
-        `max_edges` bounds the search. The bound is a *search* limit, not a rule:
-        it is generous (6 acts) and the horizon prunes the tree in practice, so a
-        world needing a longer chain is a modelling question, not a conformance
-        one. The enumeration is deterministic for any given bound.
         """
+        self._enumeration_complete = True
+        self._enumerated = 0
         if not categories or horizon_mks is None:
             return []
         edges = self.path_edges(categories, horizon_mks)
@@ -321,17 +331,21 @@ class WorldGraph(BaseModel):
             # Record every prefix: a path need not be maximal, and a shorter
             # prefix may be the one that lifts the entity off a known zero.
             results.append((list(ids), duration, delta))
-            if len(ids) >= max_edges:
+            self._enumerated += 1
+            if safety_limit is not None and self._enumerated > safety_limit:
+                self._enumeration_complete = False
                 return
             for a in by_source.get(node, []):
                 if a.id in seen_edges:
                     continue                     # no edge twice
-                # No **node** twice: a node may be reached at most once. The one
-                # exception is the origin acting on itself (`source == target`),
-                # which is how the port model expresses "an entity's own act" —
-                # and even that target is then closed to every later act, so a
-                # node can never be produced twice and a cycle can never be
-                # traversed, which is what "simple" is for (§3.5, item 45).
+                # No **node** twice, the origin included. `produced` is seeded
+                # with the start vertex at every launch, so a path can neither
+                # return to its origin (`A -> B -> A`) nor act on itself
+                # (`A -> A`): both repeat a vertex and are therefore not simple
+                # paths. Without the seed a zero-duration cycle with a positive
+                # effect would satisfy `duration(P) = 0 <= T_rec` and pump
+                # `Δ_P(X)` for free, and `verdict()` would report `reachable`
+                # where no simple path exists (§3.5, item 45).
                 if a.target in produced:
                     continue
                 if duration + a.duration_mks > horizon_mks:
@@ -342,11 +356,32 @@ class WorldGraph(BaseModel):
 
         starts = sorted({a.source for a in edges})
         for start in starts:
-            walk(start, set(), set(), [], 0.0, 0.0)
+            walk(start, {start}, set(), [], 0.0, 0.0)
         # Non-empty paths only: the empty path changes nothing and cannot raise a DoF.
         results = [r for r in results if r[0]]
         results.sort(key=lambda r: (-q6(r[2]), len(r[0]), r[0]))
         return results
+
+    def enumeration_complete(self) -> bool:
+        """Whether the last `reachability_paths` call finished the enumeration.
+
+        `False` means the implementation's own `safety_limit` cut the search
+        short, so absence of a raising path is **not** a proof of unreachability.
+        Per-call scratch, reset at the start of every enumeration.
+        """
+        return bool(getattr(self, "_enumeration_complete", True))
+
+    def set_enumeration_safety_limit(self, limit: Optional[int]) -> None:
+        """Set this implementation's own protection bound for §4.9's search.
+
+        `None` (the default, and the normative behaviour of §4.9) enumerates every
+        finite simple path: the existential the section states is over **all** of
+        them and names no depth. An implementation that sets a bound does so for
+        its own resource protection, and a verdict computed under a bound that
+        was hit reads `undetermined` — never `proven_unreachable`, which is a
+        claim of completeness the interrupted search has not earned.
+        """
+        self._enumeration_safety_limit = limit
 
     def admissible_acts(self, categories: Optional[Sequence[str]],
                         horizon_mks: Optional[float]) -> List[ActEdge]:
@@ -463,8 +498,20 @@ class WorldGraph(BaseModel):
         # admissible act may raise X's DoF. V counts what X itself can do.
         pool = self.admissible_acts(categories, horizon_mks)
         raises: List[Tuple[List[str], float]] = []
-        for act_ids, _duration, delta in self.reachability_paths(entity_id, categories,
-                                                                 horizon_mks):
+        paths = self.reachability_paths(entity_id, categories, horizon_mks,
+                                        getattr(self, "_enumeration_safety_limit", None))
+        if not self.enumeration_complete():
+            # §4.9: `proven_unreachable` is a claim of **completeness** — §4.2
+            # turns it into an exclusion, so it may only be returned when the
+            # enumeration actually finished. A search an implementation stopped
+            # at its own safety limit establishes nothing, and the honest
+            # verdict is `undetermined`.
+            return Verdict(entity_id=entity_id, verdict="undetermined",
+                           admissible_seen=len(pool),
+                           reason="the path search was stopped at the "
+                                  "implementation's safety limit, so absence of "
+                                  "a raising path is not a proof (§4.9)")
+        for act_ids, _duration, delta in paths:
             if base + delta > 0.0:
                 raises.append((act_ids, delta))
         if raises:
@@ -581,7 +628,7 @@ if __name__ == "__main__":
           r.status)
 
     print("=== verdicts (§4.9): the three entities at a known zero ===")
-    acts = [ActEdge(id="act_medkit", source="revivable", target="revivable",
+    acts = [ActEdge(id="act_medkit", source="medic", target="revivable",
                     category="medical", requires=["medkit"],
                     effect={"revivable": 0.6}, duration_mks=2_000_000.0)]
     means = ["medkit", "medkit_old"]
@@ -608,6 +655,86 @@ if __name__ == "__main__":
     v = g2.verdict("revivable", M, 1_000_000.0)
     check("the horizon is honoured: the same act outside T_rec is unreachable",
           v.verdict == "proven_unreachable", v.verdict)
+
+    print("=== simple paths: no cycles, no depth limit (§3.5, §4.9) ===")
+    H = 4_000_000.0
+    # `A -> B -> A` repeats A, so it is not a simple path and MUST NOT be
+    # enumerated. Under this port's reading of §4.9 — every vertex is a launch
+    # point — a cycle cannot flip the *verdict*: if a path's effect sum is
+    # positive, one of its acts is positive on its own (every element is itself a
+    # contiguous segment), and a single act is a simple path. What a cycle
+    # corrupts is the **witness and its magnitude**: `Δ_P` is inflated and the
+    # canonical choice (greatest `Δ_P` first) reports a path that does not exist.
+    cyc = [ActEdge(id="e_ab", source="A", target="B", category="medical",
+                   effect={"A": 0.3}, duration_mks=0.0),
+           ActEdge(id="e_ba", source="B", target="A", category="medical",
+                   effect={"A": 0.3}, duration_mks=0.0)]
+    ents5 = {"A": EntityNode(id="A", observation="complete", current_dof=0.0),
+             "B": EntityNode(id="B", observation="complete", current_dof=0.5)}
+    g5 = WorldGraph(entities=ents5, means=["medkit"], acts=cyc)
+    paths5 = g5.reachability_paths("A", M, 0.0)
+    check("the two-act cycle is never enumerated as one path",
+          all(not ({"e_ab", "e_ba"} <= set(p)) for p, _d, _x in paths5),
+          str(paths5))
+    check("no enumerated path revisits a produced vertex",
+          all(len({g5._act(i).target for i in p}) == len(p) for p, _d, _x in paths5),
+          str(paths5))
+    check("and Δ_P is therefore never the pumped +0.6",
+          all(abs(x - 0.6) > 1e-9 for _p, _d, x in paths5), str(paths5))
+    check("the witness is a single act, as the enumeration says",
+          list(g5.verdict("A", M, 0.0).witness) == ["e_ab"],
+          str(g5.verdict("A", M, 0.0).witness))
+    # A self-act repeats its own vertex, so it is no witness either.
+    g6 = WorldGraph(entities=ents5, means=["medkit"],
+                    acts=[ActEdge(id="e_aa", source="A", target="A", category="medical",
+                                  effect={"A": 0.5}, duration_mks=0.0)])
+    check("a self-act is not a simple path and is not enumerated",
+          g6.reachability_paths("A", M, 0.0) == []
+          and g6.verdict("A", M, 0.0).verdict == "proven_unreachable",
+          f"{g6.reachability_paths('A', M, 0.0)} {g6.verdict('A', M, 0.0).verdict}")
+    check("but the trivial path still keeps a positive entity reachable",
+          g6.verdict("A", M, H, 0.0).verdict == "proven_unreachable"
+          and g6.verdict("A", M, H, 0.0).witness == []
+          and g6.verdict("B", M, H, 0.0).verdict == "proven_unreachable"
+          and g5.verdict("B", M, H, 0.5).verdict == "reachable")
+    # Depth is not limited: §4.9 states an existential over finite simple paths
+    # and names no bound, so an eight-act chain inside the horizon MUST be
+    # enumerated. (It is not necessarily the *witness*: if a path's effect sum is
+    # positive, some shorter contiguous segment of it is positive too, and that
+    # segment is itself enumerable — so a long path can never be the only
+    # raising one. What the bound broke was the enumeration, not the choice.)
+    chain = [ActEdge(id=f"c{i}", source=f"n{i}", target=f"n{i+1}", category="medical",
+                     effect={"Z": 0.1}, duration_mks=1.0) for i in range(8)]
+    ents7 = {"Z": EntityNode(id="Z", observation="complete", current_dof=0.0)}
+    g7 = WorldGraph(entities=ents7, means=["medkit"], acts=chain)
+    v = g7.verdict("Z", M, 8.0)
+    check("an eight-act chain inside T_rec is enumerated, not truncated at six",
+          any(len(p) == 8 for p, _d, _x in g7.reachability_paths("Z", M, 8.0)),
+          str([len(p) for p, _d, _x in g7.reachability_paths("Z", M, 8.0)]))
+    check("and such a chain is reachable", v.verdict == "reachable",
+          f"{v.verdict} {v.witness}")
+    check("the horizon still prunes it when the chain does not fit",
+          not any(len(p) == 8 for p, _d, _x in g7.reachability_paths("Z", M, 7.0)),
+          str([len(p) for p, _d, _x in g7.reachability_paths("Z", M, 7.0)]))
+    # An interrupted search proves nothing: `proven_unreachable` is a claim of
+    # completeness that §4.2 turns into an exclusion, so a truncated search MUST
+    # report `undetermined` instead.
+    g7.reachability_paths("Z", M, 8.0, safety_limit=1)
+    check("a truncated enumeration is reported as incomplete",
+          g7.enumeration_complete() is False)
+    def _dead_end() -> List[ActEdge]:
+        """A chain whose acts raise an entity other than the one being judged."""
+        return [ActEdge(id=f"d{i}", source=f"p{i}", target=f"p{i+1}", category="medical",
+                        effect={"Y": 0.1}, duration_mks=1.0) for i in range(8)]
+
+    g8 = WorldGraph(entities=ents7, means=["medkit"], acts=_dead_end())
+    check("with no bound the same world is proven unreachable (complete search)",
+          g8.verdict("Z", M, 8.0).verdict == "proven_unreachable",
+          g8.verdict("Z", M, 8.0).verdict)
+    g8.set_enumeration_safety_limit(1)
+    v = g8.verdict("Z", M, 8.0)
+    check("an interrupted search reports undetermined, never proven_unreachable",
+          v.verdict == "undetermined", f"{v.verdict} {v.reason}")
 
     print("=== variety counter and the price of a closure (§4.6, §4.4) ===")
     r_acts = [ActEdge(id=f"r{i}", source="robot", target="robot", category="technical",
