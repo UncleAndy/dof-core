@@ -200,7 +200,15 @@ func (o *DOFOrchestrator) StepWithReport(raw map[string]interface{}) (*ActionOpt
 //     could show numbers no decision rested on.
 func (o *DOFOrchestrator) StepWithReportOnSet(raw map[string]interface{},
 	hset *HypothesisSet) (*ActionOption, *DofReport) {
-	state := o.mapper.PollEnvironment(raw)
+	return o.DecideOnSet(o.mapper.PollEnvironment(raw), hset)
+}
+
+// DecideOnSet is the same cycle on an already measured state — the entry a caller
+// uses when the state comes from somewhere other than the mapper, and the one the
+// harness exercises. It is not a second implementation: the raw-level entry above
+// delegates here, so the two cannot diverge on which options are evaluated.
+func (o *DOFOrchestrator) DecideOnSet(state *SystemStateMatrix,
+	hset *HypothesisSet) (*ActionOption, *DofReport) {
 	ctx := o.mapper.LastObservation
 	tau := TauOf(state)
 	mode := o.modeFor(tau)

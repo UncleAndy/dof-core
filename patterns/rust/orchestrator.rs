@@ -3,12 +3,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::conditional::ConditionalSelection;
 use crate::dof_core::{
     tau_of, ActionOption, DofCalculusCore, DofReport, ObservationContext, RemovedOption,
     ReportInput, SystemStateMatrix,
 };
 use crate::generator::Generator;
 use crate::graph_mapper::{GraphMapper, RawObservation};
+use crate::hypothesis::{coverage_of, plausible_members, resolved_members, validate_set, HypothesisSet};
 use crate::measurement::{MandateValue, Rate};
 
 pub struct DofOrchestrator {
@@ -153,6 +155,10 @@ impl DofOrchestrator {
     }
 
     /// Like step(), but also returns the Proof-of-Implementation audit.
+    ///
+    /// This is the **flat** audit: no declared set, no per-reading surface. It is kept
+    /// because the frozen v0.6-era harness exercises it, and its answer is the one that
+    /// evidence recorded. The v0.11 surface is `step_with_report_on_set`.
     pub fn step_with_report(
         &mut self,
         raw: &HashMap<String, RawObservation>,
@@ -161,39 +167,59 @@ impl DofOrchestrator {
         self.decide(&state)
     }
 
-    /// The decision itself, on an already measured state.
+    /// §6.2/§6.3 (v0.11): the same cycle against a **declared hypothesis set**, with the
+    /// per-reading report — the entry a v0.11 consumer of this port calls.
     ///
-    /// The state is passed **by reference** on purpose: with this sandbox's
-    /// rustc 1.95 at `-C opt-level >= 1`, moving `SystemStateMatrix` by value
-    /// into this function made the τ comparison read a stale `tau` (mode and
-    /// gate came out as if from a previous call), while `opt-level=0` was
-    /// correct. Borrowing avoids the miscompile; Go, C++ and Python are
-    /// correct at full optimization.
-    pub fn decide(&self, state: &SystemStateMatrix) -> (Option<ActionOption>, DofReport) {
-        // §3.2b (v0.11): τ is read from the resource map — signed, and `null` when
-        // unmeasured. The deprecated mirror is never an input to a rule.
+    /// `hset == None` is not a different mode: it is the observed-state singleton of
+    /// §4.10.6, one reading, and the report then carries that reading's per-reading
+    /// surface (the flat entry publishes **no** per-reading surface at all, which is a
+    /// different question and a different answer).
+    ///
+    /// A set that fails §3.6 validation is **refused**, not repaired: there is no
+    /// conformant decision to publish under a set whose readings are not
+    /// §4.1-consistent, and repairing it silently would publish one under a reading
+    /// nobody declared.
+    pub fn step_with_report_on_set(
+        &mut self,
+        raw: &HashMap<String, RawObservation>,
+        hset: Option<&HypothesisSet>,
+    ) -> (Option<ActionOption>, DofReport) {
+        let state = self.mapper.poll_environment(raw);
+        self.decide_on_set(&state, hset)
+    }
+
+    /// The candidate set of one cycle, after the v0.11 gates (§5, then §4.8).
+    ///
+    /// Shared by the flat and the per-reading paths so the two cannot diverge on
+    /// **which** options are evaluated: the mode and the candidate set are derived
+    /// once, from the **observed** state, and shared by every reading (§4.10.5).
+    /// The removal lists are reported for provenance; under `v0.11` they are empty,
+    /// because a barred candidate is evaluated and reported rather than removed.
+    fn gated_candidates(
+        &self,
+        state: &SystemStateMatrix,
+    ) -> (Vec<ActionOption>, Vec<RemovedOption>) {
         let tau = tau_of(state);
-        let mode = self.mode_for(tau);
         let options = self.generate(state, tau);
-        let (options, removed) = Self::viability_gate(options, tau);
-        let ctx = self.observation();
-        let (options, removed_structural) = (options, Vec::new());
-        // Gate order is normative (§5 → §4.8): the reason a reader needs first is
-        // the one about the world, not the one about the wallet. v0.8 retired the
+        let (options, removed_viability) = Self::viability_gate(options, tau);
+        // Gate order is normative (§5 → §4.8): the reason a reader needs first is the
+        // one about the world, not the one about the wallet. v0.8 retired the
         // structural gate of §4.5 — a charged candidate is evaluated, reported in
         // full and barred by the candidate-vector test of §4.5.
         let (groups, rates, weights, cap) = self.gate_context();
         let (options, removed_resource) =
             self.core
                 .apply_resource_gate(state, &options, groups, rates, weights, cap);
-        let mut all_removed = removed;
-        all_removed.extend(removed_structural);
+        let mut all_removed = removed_viability;
         all_removed.extend(removed_resource);
-        let selected = self.core.evaluate_and_select(state, &options, ctx);
+        (options, all_removed)
+    }
 
-        // §6.2 (v0.7): where the amounts a decision rests on came from — a measured
-        // balance or an asserted authority — so a reader can check the ceiling against
-        // a measurement instead of against a claim.
+    /// §6.2 (v0.7): where the amounts a decision rests on came from — a measured
+    /// balance or an asserted authority — so a reader can check the ceiling against a
+    /// measurement instead of against a claim. Shared by both report paths: the
+    /// provenance of the means does not depend on how many readings the cycle has.
+    fn means_provenance_of(&self, state: &SystemStateMatrix) -> BTreeMap<String, MandateValue> {
         let mut means_provenance: BTreeMap<String, MandateValue> = BTreeMap::new();
         means_provenance.insert(
             "source".to_string(),
@@ -213,6 +239,49 @@ impl DofOrchestrator {
                 means_provenance.insert("mandate_cap".to_string(), MandateValue::Number(c));
             }
         }
+        means_provenance
+    }
+
+    /// §6.2/§6.3 (v0.11): the cycle on an **already measured** state, over a declared
+    /// hypothesis set, with the per-reading report — the half of `step_with_report`
+    /// that does not touch the mapper, and the entry a caller uses when the state comes
+    /// from its own pipeline.
+    ///
+    /// The candidate set, the gates and the mode are shared with `decide`, so the two
+    /// cannot diverge on which options are evaluated; the decision and the report come
+    /// from **one** conditional pass (§4.10).
+    ///
+    /// A set that fails §3.6 validation is **refused**, not repaired: a cycle whose
+    /// readings are internally inconsistent has no conformant decision to publish,
+    /// and quietly deciding over a repaired set would publish a number no reading
+    /// produced.
+    pub fn decide_on_set(
+        &self,
+        state: &SystemStateMatrix,
+        hset: Option<&HypothesisSet>,
+    ) -> (Option<ActionOption>, DofReport) {
+        let tau = tau_of(state);
+        let mode = self.mode_for(tau);
+        let (options, all_removed) = self.gated_candidates(state);
+        let ctx = self.observation();
+
+        let members = resolved_members(state, hset);
+        let errors = validate_set(state, &members);
+        if !errors.is_empty() {
+            panic!("non-conformant hypothesis set: {}", errors.join("; "));
+        }
+        let readings = plausible_members(&members);
+
+        // One conditional pass, and it is the one published: the decision and the
+        // report read the same `ConditionalSelection`, so the report cannot describe
+        // a decision other than the one that was made (§4.10, §6.3).
+        let (groups, rates, weights, cap) = self.gate_context();
+        let (selected, selection) = match ctx {
+            Some(c) => self.core.select_conditional(
+                state, &options, &readings, c, groups, rates, weights, cap,
+            ),
+            None => (None, ConditionalSelection::default()),
+        };
 
         let report = self.core.report(
             state,
@@ -227,8 +296,50 @@ impl DofOrchestrator {
                 weights,
                 cap,
                 ctx,
-                means_provenance,
-                                ..Default::default()
+                means_provenance: self.means_provenance_of(state),
+                readings: readings.clone(),
+                declared: members,
+                coverage: coverage_of(hset),
+                horizon_mks: hset.and_then(|h| h.horizon_mks),
+                selection: Some(&selection),
+                ..Default::default()
+            },
+        );
+        (selected, report)
+    }
+
+    /// The decision itself, on an already measured state.
+    ///
+    /// The state is passed **by reference** on purpose: with this sandbox's
+    /// rustc 1.95 at `-C opt-level >= 1`, moving `SystemStateMatrix` by value
+    /// into this function made the τ comparison read a stale `tau` (mode and
+    /// gate came out as if from a previous call), while `opt-level=0` was
+    /// correct. Borrowing avoids the miscompile; Go, C++ and Python are
+    /// correct at full optimization.
+    pub fn decide(&self, state: &SystemStateMatrix) -> (Option<ActionOption>, DofReport) {
+        // §3.2b (v0.11): τ is read from the resource map — signed, and `null` when
+        // unmeasured. The deprecated mirror is never an input to a rule.
+        let tau = tau_of(state);
+        let mode = self.mode_for(tau);
+        let (options, all_removed) = self.gated_candidates(state);
+        let ctx = self.observation();
+        let selected = self.core.evaluate_and_select(state, &options, ctx);
+        let (groups, rates, weights, cap) = self.gate_context();
+        let report = self.core.report(
+            state,
+            &options,
+            &selected,
+            mode,
+            ReportInput {
+                declaration: self.mapper.last_declaration.as_ref(),
+                removed: all_removed,
+                groups,
+                rates,
+                weights,
+                cap,
+                ctx,
+                means_provenance: self.means_provenance_of(state),
+                ..Default::default()
             },
         );
         (selected, report)

@@ -79,7 +79,12 @@ impl ConditionalVector {
 
 /// §6.3: the decision payload — everything the report needs to show what was
 /// decided and under which reading.
-#[derive(Clone, Debug)]
+///
+/// `Default` is the empty selection, and it is a real value rather than a
+/// placeholder: with no observation context there is no reading to decide under, and
+/// the cycle then stays put (§4.10.6 — no `H`, no readings). Deriving it here keeps
+/// the two ports that need it from spelling their own empty payload.
+#[derive(Clone, Debug, Default)]
 pub struct ConditionalSelection {
     pub conditional_vectors: BTreeMap<String, BTreeMap<String, ConditionalVector>>,
     pub admissible_under: BTreeMap<String, BTreeMap<String, bool>>,

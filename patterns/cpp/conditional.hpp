@@ -390,26 +390,39 @@ inline ObservationContext reading_context(const ObservationContext& ctx,
     return ctx.with_dof(dofs);
 }
 
-// The full report of one cycle over a declared set. The conditional pass is the same
-// one the decision itself used (`select_conditional`) — not a second computation that
-// could drift from what was published.
-inline ReportV011 report_on_set(const DOFCalculusCore& core, const SystemStateMatrix& state,
+// The full report of one cycle over a declared set, **with the decision it describes**.
+//
+// The conditional pass is made once. When the caller has already made it — the
+// orchestrator has, because it publishes the decision — it hands the pass in
+// (`selected`, `selection`) and the report describes *that* pass; a second computation
+// could describe a decision nobody took (§4.10). A caller that only wants the report
+// leaves them empty and the pass is made here.
+inline std::pair<std::optional<ActionOption>, ReportV011> report_on_set(
+                                const DOFCalculusCore& core, const SystemStateMatrix& state,
                                 const std::vector<ActionOption>& options,
                                 const std::string& mode, const HypothesisSet* hset,
-                                const ReportInput& input = ReportInput{}) {
+                                const ReportInput& input = ReportInput{},
+                                const std::optional<ActionOption>& selected = std::nullopt,
+                                const std::optional<ConditionalSelection>& selection = std::nullopt) {
     std::vector<Hypothesis> declared = resolved_members(state, hset);
     std::vector<Hypothesis> readings = plausible_members(declared);
     const ObservationContext* ctx = input.ctx;
     ReportV011 out;
+    std::optional<ActionOption> decision = selected;
     if (ctx != nullptr) {
-        auto choice = select_conditional(core, state, options, readings, *ctx, input.groups,
-                                         input.rates, input.weights, input.cap);
-        out.base = core.report(state, options, choice.first, mode, input);
-        out.conditional_vectors = choice.second.conditional_vectors;
-        out.admissible_under = choice.second.admissible_under;
-        out.net_delta_robust = choice.second.net_delta_robust;
-        out.robust_admissible = choice.second.robust_admissible;
-        out.hypothesis_conflict = choice.second.hypothesis_conflict;
+        std::optional<ConditionalSelection> pass = selection;
+        if (!pass.has_value()) {
+            auto choice = select_conditional(core, state, options, readings, *ctx, input.groups,
+                                             input.rates, input.weights, input.cap);
+            decision = choice.first;
+            pass = choice.second;
+        }
+        out.base = core.report(state, options, decision, mode, input);
+        out.conditional_vectors = pass->conditional_vectors;
+        out.admissible_under = pass->admissible_under;
+        out.net_delta_robust = pass->net_delta_robust;
+        out.robust_admissible = pass->robust_admissible;
+        out.hypothesis_conflict = pass->hypothesis_conflict;
     } else {
         out.base = core.report(state, options, std::nullopt, mode, input);
     }
@@ -455,7 +468,7 @@ inline ReportV011 report_on_set(const DOFCalculusCore& core, const SystemStateMa
                 DOFCalculusCore::barring_key(flat);
         }
     }
-    return out;
+    return {decision, out};
 }
 
 }  // namespace dof

@@ -497,8 +497,70 @@ func runHarnessV011() {
 				len(entRow.LensTermsByHypothesis), len(entRow.RecoverabilityByHypothesis))
 		}())
 
-	// §4.10.6: with no declared set the observed state alone is the answer, and
-	// the per-reading surface is **absent** rather than a one-entry map.
+	// The layer must be reachable for a **consumer of the port**, not only for this
+	// harness: the orchestrator's set entry publishes the per-reading report, while
+	// its flat entry keeps publishing the flat one — the reduction of §4.10.6 read
+	// from the outside.
+	orchSelected, orchReport := orchObs.DecideOnSet(observed, &HypothesisSet{Members: members})
+	_, flatOrchReport := orchObs.DecideOnSet(observed, nil)
+	perReading := len(orchReport.Options) > 0
+	for _, row := range orchReport.Options {
+		if len(row.ConditionalVectors) != 2 {
+			perReading = false
+		}
+	}
+	check("§6.2/§6.3: the orchestrator publishes the per-reading report for a set",
+		len(orchReport.Hypotheses) == 2 && perReading &&
+			orchReport.TotalSystemDoFReading == ObservedHypothesisID &&
+			orchReport.HypothesisCoverage == "partial",
+		fmt.Sprintf("%d readings, %d options", len(orchReport.Hypotheses),
+			len(orchReport.Options)))
+	// §4.10.6: the set entry without a set is the observed-state **singleton** — one
+	// reading, one entry in each map — and not the `v0.9.1`-shaped flat report of
+	// `core.Report`, which carries no per-reading surface at all.
+	check("§4.10.6: the set entry without a set publishes the observed singleton",
+		len(flatOrchReport.Hypotheses) == 1 &&
+			flatOrchReport.Hypotheses[0].ID == ObservedHypothesisID &&
+			len(flatOrchReport.PlausibleHypotheses) == 1 &&
+			len(flatOrchReport.TotalSystemDoFByHypothesis) == 1,
+		fmt.Sprintf("%d readings, %d plausible", len(flatOrchReport.Hypotheses),
+			len(flatOrchReport.PlausibleHypotheses)))
+	// §4.10: the published decision is the one the report's own robust support
+	// licenses. A report describing a decision other than the one made is the defect
+	// the single conditional pass exists to prevent.
+	check("§4.10: the published decision is robustly admissible in its own report",
+		(orchSelected == nil && len(orchReport.RobustAdmissible) == 0) ||
+			(orchSelected != nil && containsString(orchReport.RobustAdmissible,
+				orchSelected.OptionID)),
+		fmt.Sprintf("selected=%v robust=%v", orchSelected, orchReport.RobustAdmissible))
+	// §3.6: a set whose observed reading is not the state it is evaluated on is
+	// **refused**, not repaired — the entry point is where that obligation lives.
+	func() {
+		defer func() {
+			rec := recover()
+			check("§3.6: the entry point refuses a set whose observed reading is absent",
+				rec != nil, fmt.Sprintf("%v", rec))
+		}()
+		orchObs.DecideOnSet(observed, &HypothesisSet{Members: barMembers})
+	}()
+	// §6.2/§6.3: the set-aware entry is reachable from a **bare scene** as well as from a
+	// measured state — this is the call a v0.11 consumer makes, and without a set it must
+	// publish the observed singleton rather than the empty surface the flat entry gives.
+	// A layer only the harness can reach has not been landed.
+	bareOrch := NewDOFOrchestrator(0.05)
+	_, bareReport := bareOrch.StepWithReportOnSet(FixtureT1Scene(), nil)
+	check("§4.10.6: the set entry on a bare scene publishes the observed singleton",
+		len(bareReport.Hypotheses) == 1 &&
+			bareReport.Hypotheses[0].ID == ObservedHypothesisID &&
+			len(bareReport.PlausibleHypotheses) == 1 &&
+			len(bareReport.TotalSystemDoFByHypothesis) == 1 &&
+			bareReport.HypothesisCoverage == "partial" &&
+			len(bareReport.ConditionalVectors) > 0,
+		fmt.Sprintf("%d readings, %d options", len(bareReport.Hypotheses),
+			len(bareReport.Options)))
+
+	// §4.10.6: with no declared set the observed state alone is the answer, and the
+	// per-reading surface is **absent** rather than a one-entry map.
 	flatReport := core.Report(observed, reportCandidates, reportSelected, "FAST_PASS",
 		ReportInput{Ctx: ctx})
 	check("§4.10.6: without a declared set the flat report carries no per-reading surface",
@@ -507,6 +569,16 @@ func runHarnessV011() {
 		fmt.Sprintf("%d hypotheses, %d totals",
 			len(flatReport.Hypotheses), len(flatReport.TotalSystemDoFByHypothesis)))
 	fmt.Println()
+}
+
+// containsString reports whether the list holds this id.
+func containsString(list []string, id string) bool {
+	for _, item := range list {
+		if item == id {
+			return true
+		}
+	}
+	return false
 }
 
 // findRow returns the option row with this id, or nil.

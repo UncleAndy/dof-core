@@ -987,6 +987,110 @@ pub fn run_harness_v011() -> Vec<String> {
     );
     println!();
 
+    // §6.2/§6.3: the layer must be reachable for a **consumer of the port**, not only
+    // for this harness. The orchestrator's set entry publishes the per-reading report;
+    // the same entry without a set publishes the observed singleton (§4.10.6).
+    //
+    // The orchestrator must have polled: without an observation context there is no
+    // reading to decide under, and the entry then reports the empty selection — which
+    // is the honest answer for a cycle with no graph, not a defect. `orch_obs` is the
+    // one already polling this scene.
+    let hset_full = HypothesisSet {
+        coverage: "partial".to_string(),
+        members: members.clone(),
+        horizon_mks: None,
+    };
+    let (orch_selected, orch_report) = orch_obs.decide_on_set(&observed, Some(&hset_full));
+    let (_, flat_orch_report) = orch_obs.decide_on_set(&observed, None);
+    let per_reading = !orch_report.options.is_empty()
+        && orch_report
+            .options
+            .iter()
+            .all(|row| row.conditional_vectors.len() == 2);
+    check11(
+        &mut failures,
+        "§6.2/§6.3: the orchestrator publishes the per-reading report for a set",
+        orch_report.hypotheses.len() == 2
+            && per_reading
+            && orch_report.total_system_dof_reading == OBSERVED_HYPOTHESIS_ID
+            && orch_report.hypothesis_coverage == "partial",
+        &format!(
+            "{} readings, {} options, vectors per option {:?}",
+            orch_report.hypotheses.len(),
+            orch_report.options.len(),
+            orch_report
+                .options
+                .iter()
+                .map(|row| row.conditional_vectors.len())
+                .collect::<Vec<_>>()
+        ),
+    );
+    check11(
+        &mut failures,
+        "§4.10.6: the set entry without a set publishes the observed singleton",
+        flat_orch_report.hypotheses.len() == 1
+            && flat_orch_report.hypotheses[0].id == OBSERVED_HYPOTHESIS_ID
+            && flat_orch_report.plausible_hypotheses.len() == 1
+            && flat_orch_report.total_system_dof_by_hypothesis.len() == 1,
+        &format!(
+            "{} readings, {} plausible",
+            flat_orch_report.hypotheses.len(),
+            flat_orch_report.plausible_hypotheses.len()
+        ),
+    );
+    // §4.10: the published decision is the one the report's own robust support
+    // licenses — a report describing a decision other than the one made is the defect
+    // the single conditional pass exists to prevent.
+    check11(
+        &mut failures,
+        "§4.10: the published decision is robustly admissible in its own report",
+        match orch_selected.as_ref() {
+            None => orch_report.robust_admissible.is_empty(),
+            Some(o) => orch_report.robust_admissible.contains(&o.option_id),
+        },
+        &format!("{:?}", orch_report.robust_admissible),
+    );
+    // §3.6: a set whose observed reading is not the state it is evaluated on is
+    // **refused**, not repaired, and the entry point is where that obligation lives.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        orch_obs.decide_on_set(&observed, Some(&HypothesisSet {
+            coverage: "partial".to_string(),
+            members: bar_members.clone(),
+            horizon_mks: None,
+        }))
+    }))
+    .is_err();
+    std::panic::set_hook(hook);
+    check11(
+        &mut failures,
+        "§3.6: the entry point refuses a set whose observed reading is absent",
+        refused,
+        &format!("{}", refused),
+    );
+    // §6.2/§6.3: the set-aware entry is reachable from a **bare scene** as well as from a
+    // measured state — this is the call a v0.11 consumer makes, and without a set it must
+    // publish the observed singleton rather than the empty surface the flat entry gives.
+    // A layer only the harness can reach has not been landed.
+    let mut orch_entry = DofOrchestrator::new(0.05);
+    let (_, entry_report) = orch_entry.step_with_report_on_set(&fx::t1_scene(), None);
+    check11(
+        &mut failures,
+        "§4.10.6: the set entry on a bare scene publishes the observed singleton",
+        entry_report.hypotheses.len() == 1
+            && entry_report.hypotheses[0].id == OBSERVED_HYPOTHESIS_ID
+            && entry_report.plausible_hypotheses.len() == 1
+            && entry_report.total_system_dof_by_hypothesis.len() == 1
+            && entry_report.hypothesis_coverage == "partial"
+            && !entry_report.conditional_vectors.is_empty(),
+        &format!(
+            "{} readings, {} options",
+            entry_report.hypotheses.len(),
+            entry_report.options.len()
+        ),
+    );
+
     failures
 }
 

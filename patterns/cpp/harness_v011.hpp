@@ -554,26 +554,39 @@ inline int run_harness_v011() {
     ReportInput report_input;
     report_input.ctx = &ctx;
     const dof::ReportV011 report =
-        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", nullptr, report_input);
+        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", nullptr, report_input).second;
 
     // With no declared set the observed state alone is the answer (§4.10.6): one
     // reading, and the flat part of the report unchanged.
     const dof::ReportV011 flat_report =
-        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", nullptr, report_input);
+        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", nullptr, report_input).second;
 
     dof::HypothesisSet hset;
     hset.members = bar_members;
     const dof::ReportV011 set_report =
-        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", &hset, report_input);
+        dof::report_on_set(core, observed, report_candidates, "FAST_PASS", &hset, report_input).second;
 
     check11(failures, "§4.10.6: without a declared set the report has one observed reading",
             report.hypotheses.size() == 1 &&
                 report.hypotheses.count(kObservedHypothesisId) == 1,
             std::to_string(report.hypotheses.size()) + " readings");
-    check11(failures, "…and the flat report is the whole answer, not a one-entry map",
-            flat_report.conditional_vectors.empty() ||
-                flat_report.plausible_hypotheses.size() == 1,
-            std::to_string(flat_report.plausible_hypotheses.size()) + " plausible");
+    // The overlay has no flat-without-readings type at all (the per-reading rows live in
+    // `ReportV011`, not in `DofReport`), so the Go/Rust assertion "the flat report
+    // carries no per-reading surface" is a type-level fact here. What can be asserted is
+    // the positive form of the same thing: with no declared set every per-reading entry
+    // belongs to the **one** observed reading, and not to a reading that was never
+    // declared.
+    bool singleton_only = !flat_report.conditional_vectors.empty();
+    for (const auto& kv : flat_report.conditional_vectors) {
+        if (kv.second.size() != 1 || kv.second.count(kObservedHypothesisId) != 1) {
+            singleton_only = false;
+            break;
+        }
+    }
+    check11(failures, "…and every per-reading entry belongs to the observed reading",
+            singleton_only,
+            std::to_string(flat_report.conditional_vectors.size()) +
+                " options, " + std::to_string(flat_report.plausible_hypotheses.size()) + " plausible");
     check11(failures, "§6.2: the scalar total names the reading it belongs to",
             set_report.total_system_dof_reading == std::string(kObservedHypothesisId),
             set_report.total_system_dof_reading);
@@ -662,6 +675,75 @@ inline int run_harness_v011() {
             lens_it != set_report.lens_terms_by_hypothesis.end()
                 ? std::to_string(lens_it->second.size()) + " readings"
                 : std::string("absent"));
+
+    // §6.2/§6.3: the layer must be reachable for a **consumer of the port**, not only
+    // for this harness. The orchestrator's set entry publishes the per-reading report;
+    // the same entry without a set publishes the observed singleton (§4.10.6), while
+    // `step_with_report` keeps publishing the flat audit.
+    dof::HypothesisSet members_set;
+    members_set.members = members;
+    const auto orch_choice = orch_obs.decide_on_set(observed, &members_set);
+    const auto orch_flat = orch_obs.decide_on_set(observed, nullptr);
+    bool orch_per_reading = !orch_choice.second.conditional_vectors.empty();
+    for (const auto& kv : orch_choice.second.conditional_vectors) {
+        if (kv.second.size() != 2) {
+            orch_per_reading = false;
+            break;
+        }
+    }
+    check11(failures, "§6.2/§6.3: the orchestrator publishes the per-reading report for a set",
+            orch_choice.second.hypotheses.size() == 2 && orch_per_reading &&
+                orch_choice.second.total_system_dof_reading == kObservedHypothesisId &&
+                orch_choice.second.hypothesis_coverage == "partial",
+            std::to_string(orch_choice.second.hypotheses.size()) + " readings, " +
+                std::to_string(orch_choice.second.conditional_vectors.size()) + " options");
+    check11(failures, "§4.10.6: the set entry without a set publishes the observed singleton",
+            orch_flat.second.hypotheses.size() == 1 &&
+                orch_flat.second.hypotheses.count(kObservedHypothesisId) == 1 &&
+                orch_flat.second.plausible_hypotheses.size() == 1 &&
+                orch_flat.second.total_system_dof_by_hypothesis.size() == 1,
+            std::to_string(orch_flat.second.hypotheses.size()) + " readings, " +
+                std::to_string(orch_flat.second.plausible_hypotheses.size()) + " plausible");
+    // §4.10: the published decision is the one the report's own robust support licenses
+    // — a report describing a decision other than the one made is the defect the single
+    // conditional pass exists to prevent.
+    const auto& robust = orch_choice.second.robust_admissible;
+    const bool decided_ok =
+        orch_choice.first.has_value()
+            ? std::find(robust.begin(), robust.end(), orch_choice.first->option_id) != robust.end()
+            : robust.empty();
+    check11(failures, "§4.10: the published decision is robustly admissible in its own report",
+            decided_ok,
+            std::to_string(robust.size()) + " robust");
+    // §3.6: a set whose observed reading is not the state it is evaluated on is
+    // **refused**, not repaired — the entry point is where that obligation lives.
+    bool refused = false;
+    std::string refusal;
+    try {
+        dof::HypothesisSet inconsistent;
+        inconsistent.members = bar_members;
+        orch_obs.decide_on_set(observed, &inconsistent);
+    } catch (const std::invalid_argument& e) {
+        refused = true;
+        refusal = e.what();
+    }
+    check11(failures, "§3.6: the entry point refuses a set whose observed reading is absent",
+            refused, refusal);
+    // §6.2/§6.3: the set-aware entry is reachable from a **bare scene** as well as from a
+    // measured state — this is the call a v0.11 consumer makes, and without a set it must
+    // publish the observed singleton rather than the empty surface the flat entry gives.
+    // A layer only the harness can reach has not been landed.
+    DOFOrchestrator orch_entry(0.05);
+    const auto entry = orch_entry.step_with_report_on_set(t1_scene(), nullptr);
+    check11(failures, "§4.10.6: the set entry on a bare scene publishes the observed singleton",
+            entry.second.hypotheses.size() == 1 &&
+                entry.second.hypotheses.count(kObservedHypothesisId) == 1 &&
+                entry.second.plausible_hypotheses.size() == 1 &&
+                entry.second.total_system_dof_by_hypothesis.size() == 1 &&
+                entry.second.hypothesis_coverage == "partial" &&
+                !entry.second.conditional_vectors.empty(),
+            std::to_string(entry.second.hypotheses.size()) + " readings, " +
+                std::to_string(entry.second.conditional_vectors.size()) + " options");
     std::cout << "\n";
 
     return static_cast<int>(failures.size());

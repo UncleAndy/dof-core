@@ -4,12 +4,14 @@
 #pragma once
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "dof_core.hpp"
+#include "conditional.hpp"  // the v0.11 per-reading report (ReportV011) and the pass
 #include "generator.hpp"
 #include "graph_mapper.hpp"
 #include "measurement.hpp"
@@ -93,17 +95,53 @@ public:
     {
         SystemStateMatrix state = mapper_.poll_environment(raw);
         const ObservationContext* ctx = mapper_.last_observation ? &*mapper_.last_observation : nullptr;
+        auto gated = gated_candidates(state);
+        return core_.evaluate_and_select(state, gated.first, ctx);
+    }
+
+    // The candidate set of one cycle, after the §5 gate and the §4.8b resource gate,
+    // with what each removed.
+    //
+    // One home for the gate order — normative at §5 → §4.8b: the reason a reader needs
+    // first is the one about the world, not the one about the wallet. It is shared by
+    // every entry point so the flat and the per-reading paths cannot diverge on
+    // **which** options are evaluated; the mode and the candidate set are read from the
+    // observed state (§4.10.5).
+    //
+    // v0.8 retired the structural gate of §4.5: a charged candidate is no longer
+    // removed from the set — it is evaluated, reported in full and barred by the
+    // candidate-vector test.
+    std::pair<std::vector<ActionOption>, std::vector<RemovedOption>> gated_candidates(
+        const SystemStateMatrix& state) const
+    {
         // §3.2b (v0.11): τ comes from the resource map — signed, `null` when
         // unmeasured. The deprecated mirror is never an input to a rule.
         const std::optional<double> tau = tau_of(state);
         auto gated = viability_gate(generate(state, tau), tau);
-        // v0.8 retired the structural gate of §4.5: a charged candidate is no longer
-        // removed from the set — it is evaluated, reported in full and barred by the
-        // candidate-vector test.
         auto affordable = core_.apply_resource_gate(state, gated.first,
                                                     groups_ptr(), rates_ptr(),
                                                     weights_ptr(), cap_value());
-        return core_.evaluate_and_select(state, affordable.first, ctx);
+        std::vector<RemovedOption> all_removed = gated.second;
+        all_removed.insert(all_removed.end(), affordable.second.begin(), affordable.second.end());
+        return {affordable.first, all_removed};
+    }
+
+    // §6.2 (v0.7): where the amounts a decision rests on came from — a measured balance
+    // or an asserted authority — so a reader can check the ceiling against a measurement
+    // instead of against a claim. One home for it: a report that spells it differently
+    // in one entry point is the defect this prevents.
+    void fill_means_provenance(const SystemStateMatrix& state, ReportInput& in) const
+    {
+        in.means_provenance["source"] = dof::MandateValue::str("measured balance (§4.8)");
+        for (const auto& kv : state.resources) {
+            in.means_provenance["measured:" + kv.first] = dof::MandateValue::num(resource_value(kv.second));
+        }
+        if (mapper_.last_declaration && mapper_.last_declaration->numeraire) {
+            in.means_provenance["numeraire"] = dof::MandateValue::str(*mapper_.last_declaration->numeraire);
+        }
+        if (cap_value()) {
+            in.means_provenance["mandate_cap"] = dof::MandateValue::num(*cap_value());
+        }
     }
 
     // Like step(), but also returns the Proof-of-Implementation audit.
@@ -117,41 +155,81 @@ public:
     {
         SystemStateMatrix state = mapper_.poll_environment(raw);
         const ObservationContext* ctx = mapper_.last_observation ? &*mapper_.last_observation : nullptr;
-        // §3.2b (v0.11): τ is read from the resource map — signed, and `null` when
-        // unmeasured. The deprecated mirror is never an input to a rule.
-        const std::optional<double> tau = tau_of(state);
-        const std::string mode = mode_for(tau);
-        auto gated = viability_gate(generate(state, tau), tau);
-        auto affordable = core_.apply_resource_gate(state, gated.first,
-                                                    groups_ptr(), rates_ptr(),
-                                                    weights_ptr(), cap_value());
-        auto selected = core_.evaluate_and_select(state, affordable.first, ctx);
-        std::vector<RemovedOption> all_removed = gated.second;
-        all_removed.insert(all_removed.end(), affordable.second.begin(), affordable.second.end());
+        const std::string mode = mode_for(tau_of(state));
+        auto gated = gated_candidates(state);
+        auto selected = core_.evaluate_and_select(state, gated.first, ctx);
 
-        // §6.2 (v0.7): where the amounts a decision rests on came from — a measured
-        // balance or an asserted authority — so a reader can check the ceiling
-        // against a measurement instead of against a claim.
         ReportInput in;
         in.declaration = mapper_.last_declaration;
-        in.removed = all_removed;
+        in.removed = gated.second;
         in.groups = groups_ptr();
         in.rates = rates_ptr();
         in.weights = weights_ptr();
         in.cap = cap_value();
         in.ctx = ctx;
-        in.means_provenance["source"] = dof::MandateValue::str("measured balance (§4.8)");
-        for (const auto& kv : state.resources) {
-            in.means_provenance["measured:" + kv.first] = dof::MandateValue::num(resource_value(kv.second));
-        }
-        if (mapper_.last_declaration && mapper_.last_declaration->numeraire) {
-            in.means_provenance["numeraire"] = dof::MandateValue::str(*mapper_.last_declaration->numeraire);
-        }
-        if (cap_value()) {
-            in.means_provenance["mandate_cap"] = dof::MandateValue::num(*cap_value());
-        }
-        DofReport rep = core_.report(state, affordable.first, selected, mode, in);
+        fill_means_provenance(state, in);
+        DofReport rep = core_.report(state, gated.first, selected, mode, in);
         return {selected, rep};
+    }
+
+    // §6.2/§6.3 (v0.11): the same cycle against a **declared hypothesis set**, with the
+    // per-reading report — the entry a v0.11 consumer of this port calls.
+    //
+    // `hset == nullptr` (or an empty set) is the observed-state singleton of §4.10.6:
+    // one reading, one entry in each map. It is deliberately not `step_with_report`,
+    // which publishes the flat audit of §6.1–§6.3 with no per-reading surface at all —
+    // two answers to two questions, and a port that cannot tell them apart cannot be
+    // audited per reading.
+    std::pair<std::optional<ActionOption>, dof::ReportV011> step_with_report_on_set(
+        const std::unordered_map<std::string, RawObservation>& raw,
+        const dof::HypothesisSet* hset) const
+    {
+        return decide_on_set(mapper_.poll_environment(raw), hset);
+    }
+
+    // The per-reading decision on an already measured state (see
+    // `step_with_report_on_set`; the state is taken as a parameter for the same reason
+    // `measure` exists).
+    //
+    // §4.10: one conditional pass, and it is the one published — the report is built
+    // from the pass handed to it, never from a second computation that could describe a
+    // decision nobody took.
+    //
+    // §3.6: a set whose readings are not §4.1-consistent is **refused**, not repaired.
+    // There is no conformant decision to publish under such a set, and repairing it
+    // silently would publish one under a reading nobody declared.
+    std::pair<std::optional<ActionOption>, dof::ReportV011> decide_on_set(
+        const SystemStateMatrix& state, const dof::HypothesisSet* hset) const
+    {
+        const ObservationContext* ctx = mapper_.last_observation ? &*mapper_.last_observation : nullptr;
+        auto gated = gated_candidates(state);
+        const std::vector<dof::Hypothesis> declared = dof::resolved_members(state, hset);
+        const std::vector<std::string> errors = dof::validate_set(state, declared);
+        if (!errors.empty()) {
+            std::string message = "non-conformant hypothesis set:";
+            for (const auto& e : errors) message += " " + e + ";";
+            throw std::invalid_argument(message);
+        }
+        const std::vector<dof::Hypothesis> readings = dof::plausible_members(declared);
+        std::optional<dof::ConditionalSelection> pass;
+        std::optional<ActionOption> decision;
+        if (ctx != nullptr) {
+            auto choice = dof::select_conditional(core_, state, gated.first, readings, *ctx,
+                                             groups_ptr(), rates_ptr(), weights_ptr(), cap_value());
+            decision = choice.first;
+            pass = choice.second;
+        }
+        ReportInput in;
+        in.declaration = mapper_.last_declaration;
+        in.removed = gated.second;
+        in.groups = groups_ptr();
+        in.rates = rates_ptr();
+        in.weights = weights_ptr();
+        in.cap = cap_value();
+        in.ctx = ctx;
+        fill_means_provenance(state, in);
+        return dof::report_on_set(core_, state, gated.first, mode_for(tau_of(state)), hset, in,
+                             decision, pass);
     }
 
 private:
