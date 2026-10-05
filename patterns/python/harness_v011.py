@@ -42,15 +42,30 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from calculus_core import (ActionOption, DOFCalculusCore, ObservationContext,
-                           ResourceObservation, SystemStateMatrix, tau_of)
+from calculus_core import (NET_DELTA_TOLERANCE, ActionOption, DOFCalculusCore,
+                           ObservationContext, ResourceObservation,
+                           SystemStateMatrix, tau_of)
 import fixture_v07
-from fixture_v011 import (TAU_FAST_MKS, TAU_MKS, default_scene, hset,
+from fixture_v011 import (TAU_FAST_MKS, TAU_MKS, T_REC_V011, default_scene, hset,
                           hypothesis_from, observed_only, scene)
 from hypothesis import (Hypothesis, HypothesisSet, plausible_members,
                         resolved_members, validate_set)
 from orchestrator import DOFOrchestrator
 from world_graph import ClosedRef
+
+def _vertices(path, world):
+    """The **vertex sequence** of an enumerated path (§4.9).
+
+    A path is a chain of acts joined `target -> source`, so its vertices are the
+    first act's `source` followed by every act's `target`. Checking uniqueness of
+    the *targets* alone is not the rule: the start vertex is never a target, so
+    `A -> B -> C` and `A -> B -> A -> B` both have unique targets. The sequence,
+    and the join between consecutive acts, are what "simple" is about.
+    """
+    acts = [world._act(i) for i in path]
+    joined = all(acts[i].target == acts[i + 1].source for i in range(len(acts) - 1))
+    return [acts[0].source] + [a.target for a in acts], joined
+
 
 PASS = 0
 FAIL = 0
@@ -152,17 +167,36 @@ def test_two_readings():
     check("(d) and so does the DoF they produce",
           abs(lens["$observed$"][1] - lens["h_low"][1]) > 1e-9, str(lens))
 
-    # (z) the ruler and the type-derived graph values are shared.
+    # Two readings of one cycle with **different measured content**, built before
+    # (z) and (ab) so that both can compare across readings instead of comparing
+    # an object with itself.
+    raw_a, raw_b = scene(), scene()
+    raw_b["robot"]["lenses"]["variety"]["V"] = 5.0     # a different measurement
+    d_a, d_b = _decl_for(raw_a), _decl_for(raw_b)
+
+    # (z) the ruler and the type-derived graph values are shared. "Shared" has to
+    # mean *the same across two readings*, and each item has to be traced to its
+    # declared source: `ctx.means_class == ctx.means_class` and
+    # `ctx.horizon("robot") == ctx.horizon("robot")` compare one object with
+    # itself and would pass for a port that read the ruler off the hypothesis.
     check("(z) M(S) is one class for the whole set",
-          list(ctx.means_class) == list(ctx.means_class))
-    check("(z) T_rec is declared once",
-          ctx.horizon("robot") == ctx.horizon("robot"))
+          list(d_a.means_class) == list(d_b.means_class)
+          == list(raw_a["world"]["means_class"]), str(d_a.means_class))
+    check("(z) the measurement durations are ruler-level, hence shared",
+          d_a.measurement_durations == d_b.measurement_durations)
+    check("(z) T_rec is read from the graph, not from a state field",
+          all(ctx.horizon(e) == T_REC_V011[e] for e in T_REC_V011)
+          and all(ctx.horizon(e) == ctx.horizon(e) for e in T_REC_V011),
+          str({e: ctx.horizon(e) for e in T_REC_V011}))
     struct_a = ctx.world.reachability_paths("robot", ctx.means_class,
                                             ctx.horizon("robot"))
-    struct_b = ctx.world.reachability_paths("robot", ctx.means_class,
-                                            ctx.horizon("robot"))
-    check("(z) the structurally admissible path set is the same",
-          struct_a == struct_b and len(struct_a) > 0, str(struct_a[:3]))
+    struct_b = ctx.world.with_closed([]).reachability_paths("robot", ctx.means_class,
+                                                            ctx.horizon("robot"))
+    check("(z) the structurally admissible path set is non-empty and identical "
+          "on the same observation taken twice",
+          struct_a == struct_b and len(struct_a) > 0
+          and all(len(set(_vertices(p, ctx.world)[0])) == len(_vertices(p, ctx.world)[0])
+                  for p, _d, _x in struct_a), str(struct_a[:3]))
 
     # (y) the verdict is per reading. The witness is a genuine **simple path**:
     # `act_medkit` runs `adult -> revivable`, so the path visits two vertices and
@@ -188,18 +222,115 @@ def test_two_readings():
     check("(y) but the trivial path keeps it reachable while it is positive",
           ctx.world.verdict("robot", ctx.means_class, ctx.horizon("robot"), 0.5
                             ).verdict == "reachable")
-    check("(y) no enumerated path repeats a produced vertex",
-          all(len({ctx.world._act(i).target for i in p}) == len(p)
+    check("(y) every enumerated path is a simple path over its VERTEX SEQUENCE",
+          all(len(set(_vertices(p, ctx.world)[0])) == len(_vertices(p, ctx.world)[0])
+              and _vertices(p, ctx.world)[1]
               for p, _d, _x in
               ctx.world.reachability_paths("revivable", ctx.means_class, h_rec)))
+    # The witness of the entity judged is a simple path too, and its start is not
+    # among the vertices it produces.
+    _wv, _wj = _vertices(v_zero.witness, ctx.world)
+    check("(y) the reported witness joins up and repeats no vertex",
+          _wj and len(set(_wv)) == len(_wv) and _wv[0] not in _wv[1:], str(_wv))
     check("(y) but `passive` is proven unreachable",
           ctx.world.verdict("passive", ctx.means_class, ctx.horizon("passive"), 0.0
                             ).verdict == "proven_unreachable")
 
-    # (ab) the ruler digest is shared, the per-reading digest is not.
-    check("(ab) the ruler digest is reported", bool(decl.ruler_digest()))
-    check("(ab) the ruler digest does not move with the counters",
-          decl.ruler_digest() == decl.ruler_digest())
+    # (ab) the ruler digest is shared, the per-reading digest is not. This is
+    # checked the only way that means anything: against the **second reading**
+    # built above, never by calling one accessor twice on one object —
+    # `d.ruler_digest() == d.ruler_digest()` is a tautology and would hold for
+    # any accessor, including a wrong one (§3.4.2, §3.4.3, §4.10).
+    check("(ab) the two readings really differ in measured content",
+          d_a.digest() != d_b.digest(), f"{d_a.digest()} vs {d_b.digest()}")
+    check("(ab) yet they were taken under ONE ruler",
+          d_a.ruler_digest() == d_b.ruler_digest(),
+          f"{d_a.ruler_digest()} vs {d_b.ruler_digest()}")
+    check("(ab) and the ruler digest is not the declaration digest",
+          d_a.ruler_digest() != d_a.digest())
+    check("(ab) the ruler digest is reported", bool(d_a.ruler_digest()))
+
+
+# ---------------------------------------------------------------- (W)
+def test_robust_reversibility():
+    """(W) §4.5 key 3 under a hypothesis set: reversible under **every** reading.
+
+    The counterexample needs two candidates that **tie** on key 2 — otherwise key
+    3 never runs — and whose reversibility differs between the readings. The tie
+    is made exact by construction: the closure is price-free, because it closes a
+    mean required only by an act whose category is outside `M(S)`, and an act
+    outside `M(S)` is counted by no entity's `V` (§4.6) and belongs to no
+    admissible path (§4.9). So the closure is real — `closed` is not empty, the
+    option is irreversible under that reading — while the index it must not move
+    stays exactly where it was.
+    """
+    print("=== (W) key 3 is worst-case over the readings, not the observed one ===")
+    raw = scene()
+    raw["world"]["acts"].append(
+        {"id": "act_exotic", "source": "passive", "target": "passive",
+         "category": "exotic", "requires": ["exotic_mean"], "effect": {},
+         "duration_mks": 1000.0})
+    raw["world"]["means"].append("exotic_mean")
+
+    orch, state, _, _ = cycle(raw)
+    ctx = orch.mapper.last_observation
+    core = orch.core
+    hs = hset(state, lambda s: [hypothesis_from(s, "h_low", {"robot": 0.2})])
+    members = resolved_members(state, hs)
+    plausible = plausible_members(members)
+    check("(W) two plausible readings are declared", len(plausible) == 2,
+          str([h.id for h in plausible]))
+
+    exotic = [ClosedRef(kind="mean", id="exotic_mean")]
+    # `alpha` closes `exotic_mean` under `h_low` only; `beta` closes nothing.
+    alpha = opt("alpha", projected_dof_delta={"drone": 0.1},
+                estimated_duration_mks=1000.0,
+                closed={"$observed$": [], "h_low": exotic})
+    beta = opt("beta", projected_dof_delta={"drone": 0.1},
+               estimated_duration_mks=1000.0)
+
+    check("(W) the two candidates are declared in different closure forms",
+          alpha.closure_form() == "per_hypothesis" and beta.closure_form() == "flat",
+          f"{alpha.closure_form()} / {beta.closure_form()}")
+    check("(W) `alpha` reads as reversible under the observed reading",
+          core.is_reversible(alpha, "$observed$") is True)
+    check("(W) but not under `h_low`, where it closes a mean",
+          core.is_reversible(alpha, "h_low") is False)
+    check("(W) so its robust reading is `false` while `beta`'s is `true`",
+          core.robust_reversible(alpha, plausible) is False
+          and core.robust_reversible(beta, plausible) is True)
+
+    per_h = core.conditional_vectors(plausible, [alpha, beta], ctx)
+    d_alpha = core.least_favourable(per_h["alpha"], plausible)
+    d_beta = core.least_favourable(per_h["beta"], plausible)
+    check("(W) the closure is price-free: the two tie on key 2 exactly",
+          abs(d_alpha - d_beta) <= NET_DELTA_TOLERANCE,
+          f"{d_alpha!r} vs {d_beta!r}")
+    check("(W) and both are robustly admissible, so key 3 is what decides",
+          core.robust_admissible(per_h["alpha"], plausible)
+          and core.robust_admissible(per_h["beta"], plausible))
+    check("(W) the per-reading vector carries reversibility (§6.3)",
+          per_h["alpha"]["h_low"]["reversible"] is False
+          and per_h["alpha"]["$observed$"]["reversible"] is True
+          and per_h["beta"]["h_low"]["reversible"] is True,
+          str({k: v.get("reversible") for k, v in per_h["alpha"].items()}))
+
+    selected, report = core.select_conditional(state, [alpha, beta], plausible, ctx)
+    check("(W) the reversible-everywhere candidate wins the tie",
+          selected is not None and selected.option_id == "beta",
+          str(getattr(selected, "option_id", None)))
+    check("(W) a port reading reversibility from `$observed$` would pick `alpha`",
+          core.is_reversible(alpha) is True and core.is_reversible(beta) is True
+          and sorted([alpha.option_id, beta.option_id])[0] == "alpha")
+
+    # §4.10.6: with the singleton the key reduces to §4.5 exactly — and there the
+    # observed reading IS the only reading, so `alpha`'s closure is invisible.
+    single = resolved_members(state, hset(state, []))
+    selected_single, _ = core.select_conditional(state, [alpha, beta], single, ctx)
+    check("(W) under the singleton `H` the same pair is a tie on key 3",
+          selected_single is not None
+          and selected_single.option_id == sorted(["alpha", "beta"])[0],
+          str(getattr(selected_single, "option_id", None)))
 
 
 # ---------------------------------------------------------------- ar, ad
@@ -568,6 +699,7 @@ def main():
     test_axis_rate_is_tau_independent()
     test_fingerprints()
     test_measurement_durations()
+    test_robust_reversibility()
     print(f"\nchecks: {PASS + FAIL}, failures: {FAIL}")
     return 0 if FAIL == 0 else 1
 

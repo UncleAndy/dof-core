@@ -893,10 +893,38 @@ class DOFCalculusCore:
         for option in options:
             per_h: Dict[str, Dict[str, object]] = {}
             for h in members:
-                per_h[h.id] = self.conditional_vector(h.state, option, ctx, h.id,
-                                                      groups, rates, weights, cap)
+                vector = self.conditional_vector(h.state, option, ctx, h.id,
+                                                 groups, rates, weights, cap)
+                # §6.3: reversibility is per reading too. With a per-hypothesis
+                # `closed` the flag is not one value but a vector, and the key
+                # that orders by it (§4.5 key 3, robust reading) reads all of
+                # them — a report carrying only the observed reading's flag would
+                # show the key's input as a constant while the key ranges over
+                # the set.
+                vector["reversible"] = self.is_reversible(option, h.id)
+                per_h[h.id] = vector
             out[option.option_id] = per_h
         return out
+
+    def robust_reversible(self, option: ActionOption,
+                          members: Optional[Sequence] = None) -> bool:
+        """§4.5 key 3 under a hypothesis set: reversible under **every** plausible reading.
+
+        `reversible_robust(o) = ∀ h ∈ H_plausible : o.closed[h] = []`.
+
+        The direction is not a matter of taste. Key 2 worst-cases the **price** of
+        a closure (`min_h NetDelta(o | h)`), so a closure invisible at one reading
+        but real at another is already charged at its worst. If this preference
+        were read from a single reading — the observed one included — that same
+        closure would be charged at its worst *and* rewarded as if it did not
+        exist, and the robust ordering could be reversed by the very closure the
+        worst case exists to weigh. So the preference is taken over the same set,
+        in the same direction, as the price. With no hypothesis set the key is the
+        flat `closed = []` of §4.5, which this reduces to exactly.
+        """
+        if not members:
+            return self.is_reversible(option)
+        return all(self.is_reversible(option, h.id) for h in members)
 
     def robust_admissible(self, per_h: Dict[str, Dict[str, object]],
                           members: Sequence) -> bool:
@@ -1013,9 +1041,14 @@ class DOFCalculusCore:
             best = max(value for _, value in robust_keys)
             survivors = [(o, value) for o, value in robust_keys
                          if abs(value - best) <= NET_DELTA_TOLERANCE]
-            # §4.5 key 3: prefer the reversible candidate.
-            if any(self.is_reversible(o) for o, _ in survivors):
-                survivors = [(o, v) for o, v in survivors if self.is_reversible(o)]
+            # §4.5 key 3: prefer the reversible candidate — under its **robust**
+            # reading (§4.10.2), i.e. reversible under every plausible reading.
+            # Reading it from the observed reading alone would let a closure that
+            # key 2 has already charged at its worst also collect the preference
+            # for closing nothing.
+            if any(self.robust_reversible(o, members) for o, _ in survivors):
+                survivors = [(o, v) for o, v in survivors
+                             if self.robust_reversible(o, members)]
             # §4.5 key 4: the survivor must beat the comparison origin.
             survivors = [(o, v) for o, v in survivors if v > 0.0]
         else:
@@ -1462,6 +1495,11 @@ class DOFCalculusCore:
             option_rows.append({
                 "option_id": option.option_id,
                 "is_reversible": self.is_reversible(option),
+                # §6.3: the boolean §4.5 key 3 actually reads under a hypothesis
+                # set — the worst case over the plausible readings, not the
+                # observed one's flag. Reported next to `robust_net_delta` so the
+                # key's input is visible as what it is.
+                "robust_is_reversible": self.robust_reversible(option, observed),
                 "projected_dof": projected_dof,
                 "net_delta": net_delta,
                 # §6.3 (v0.8): the structural keys, and — when the candidate lost
