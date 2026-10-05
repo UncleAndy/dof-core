@@ -262,6 +262,33 @@ func v011Entity(state *SystemStateMatrix, skip int) string {
 	return ""
 }
 
+// v011HOnlyCloser is the discriminating candidate of §6.3. Under `h_alt` it closes
+// **two** means: trainee's own mean, which drives its Variety counter to zero, and
+// the supervise mean, which removes the act path that would otherwise raise it back.
+// Under the observed reading it closes nothing.
+//
+// The pair is what makes the check discriminate. With the closure declared only for
+// `h_alt`, the correct after-state has trainee at `DoF = 0` with no raising path — a
+// `proven_unreachable` verdict, so `D2 = 1` — while a port that recomputes the
+// counters from `closure[$observed$]` (the empty list) leaves trainee at its observed
+// `DoF > 0` and charges nothing. The released §4.5 scene is the world of this fixture,
+// so no new scene is needed.
+func v011HOnlyCloser() *ActionOption {
+	o := t1Mirror()
+	o.OptionID = "h_only_closer"
+	o.ProjectedDoFDelta = nil
+	o.ProjectedByHypothesis = map[string]map[string]float64{
+		ObservedHypothesisID: {"drone": 0.1},
+		"h_alt":              {"drone": 0.1},
+	}
+	o.Closed = nil
+	o.ClosedByHypothesis = map[string][]ClosedRef{
+		ObservedHypothesisID: {},
+		"h_alt":              closures(TraineeMeanID, SuperviseMeanID),
+	}
+	return o
+}
+
 // hasSubstring reports whether any of the messages contains `needle`.
 func hasSubstring(messages []string, needle string) bool {
 	for _, message := range messages {

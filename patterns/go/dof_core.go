@@ -858,7 +858,14 @@ func (c *DOFCalculusCore) lostPathsFor(state *SystemStateMatrix, option *ActionO
 		// the second run is `dofAfterClosure` and never `projectedDoF`; a nil
 		// result means the closure did not touch this entity, which then keeps
 		// its observed DoF.
-		afterDoF := c.dofAfterClosure(ent, option, ctx)
+		//
+		// §6.3: the after-state is **this reading's** own — the counters are
+		// recomputed from `closure[h]`, the same list the graph above was pruned
+		// by. Reading `closure[$observed$]` here (as this port did before) built a
+		// state no hypothesis produces: the graph of one reading with the counters
+		// of another, which is exactly what §6.3's "MUST NOT read one reading's
+		// closures against another reading's state" forbids.
+		afterDoF := c.dofAfterClosureFor(ent, option, ctx, hypothesisID)
 		after := closedWorld.VerdictWithDoF(id, ctx.MeansClass, ctx.horizon(id), afterDoF)
 		if after.Verdict == "reachable" {
 			continue

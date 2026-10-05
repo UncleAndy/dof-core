@@ -1124,13 +1124,14 @@ public:
             // run is `dof_after_closure` and never `projected_dof`; a nullopt means
             // the closure did not touch this entity, which then keeps its DoF.
             //
-            // The reference reads the after-state DoF through the **observed**
-            // entry point here, even inside the per-hypothesis procedure: the
-            // closure list of the second run comes from `hypothesis_id`, but the
-            // recomputation does not. Ported as the reference stands — a port that
-            // silently repaired this would disagree with every other port on any
-            // fixture that closes different transitions under different readings.
-            std::optional<double> after_dof = dof_after_closure(entity, option, ctx);
+            // §6.3: the after-state is **this reading's** own, so the counters are
+            // recomputed from the same `closure[h]` the graph above was pruned by.
+            // Reading `closure[$observed$]` here — as the reference did before this
+            // correction — built a state no hypothesis produces: one reading's graph
+            // with another reading's counters, which is what §6.3's "MUST NOT read
+            // one reading's closures against another reading's state" forbids.
+            std::optional<double> after_dof =
+                dof_after_closure_for(entity, option, ctx, hypothesis_id);
             dof::Verdict after = closed_world.verdict_with_dof(
                 id, ctx->means_class, ctx->horizon(id), after_dof);
             if (after.verdict == "reachable") continue;

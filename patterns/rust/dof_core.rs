@@ -1257,7 +1257,13 @@ impl DofCalculusCore {
             if before.verdict != "reachable" {
                 continue;
             }
-            let after_dof = self.dof_after_closure(entity, option, ctx);
+            // §6.3: the after-state is **this reading's** own, so the counters are
+            // recomputed from the same `closure[h]` the graph above was pruned by.
+            // Reading `closure[$observed$]` here — as this port did before — built a
+            // state no hypothesis produces: one reading's graph with another
+            // reading's counters, which is what §6.3's "MUST NOT read one reading's
+            // closures against another reading's state" forbids.
+            let after_dof = self.dof_after_closure_for(entity, option, ctx, hypothesis_id);
             let after = closed_world.verdict_with_dof(
                 &id,
                 &ctx.means_class,

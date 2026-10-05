@@ -755,7 +755,71 @@ pub fn run_harness_v011() -> Vec<String> {
     );
     println!();
 
+    // --- 6. §6.3: the after-state of a reading is its own -------------------
+    println!("=== 6. §6.3: a reading's after-state is its own ===");
+    // `D2`/`D3` are recomputed on **that reading's** after-state — the pruned graph
+    // **and** the counters. An option that closes only under `h_alt` must be charged
+    // there. A port that prunes the graph with `closure[h]` but recomputes the
+    // counters from `closure[$observed$]` builds a state no hypothesis produces, and
+    // this fixture separates the two: trainee's own mean drives its counter to zero
+    // while the supervise mean removes the path that would raise it back.
+    let closer_h = f11::v011_h_only_closer();
+    let rows_h = core.lost_paths_for(&state, &closer_h, Some(&ctx), "h_alt");
+    check11(
+        &mut failures,
+        "§6.3: a reading's after-state is built from that reading's own closures",
+        rows_h.len() == 1
+            && rows_h[0].entity_id == "trainee"
+            && rows_h[0].verdict_before == "reachable"
+            && rows_h[0].verdict_after == "proven_unreachable",
+        &format!("{} rows", rows_h.len()),
+    );
+    check11(
+        &mut failures,
+        "…and the observed reading of the same option charges nothing",
+        core.lost_paths(&state, &closer_h, Some(&ctx)).is_empty(),
+        "",
+    );
+
+    // The form is a declaration style, not a semantics: under one reading, two
+    // options declaring the same closure list — one flat, one per-hypothesis — must
+    // produce the same lost paths. This is the invariance the mixed triple breaks.
+    let mut flat_closer = f11::v011_h_only_closer();
+    flat_closer.option_id = "flat_closer".to_string();
+    flat_closer.closed = crate::options_v07::closures(&[
+        crate::fixture_v07::TRAINEE_MEAN,
+        crate::fixture_v07::SUPERVISE_MEAN,
+    ]);
+    flat_closer.closed_by_hypothesis.clear();
+    let rows_flat = core.lost_paths_for(&state, &flat_closer, Some(&ctx), "h_alt");
+    let rows_per_h = core.lost_paths_for(&state, &f11::v011_h_only_closer(), Some(&ctx), "h_alt");
+    check11(
+        &mut failures,
+        "§3.3/§6.3: the per-hypothesis form agrees with the flat form on the same list",
+        same_lost_rows(&rows_flat, &rows_per_h),
+        &format!("{} vs {} rows", rows_flat.len(), rows_per_h.len()),
+    );
+    println!();
+
     failures
+}
+
+/// Compares two lost-path reports on the facts that carry meaning: the entity and
+/// the two verdicts. Order is the fixture's sorted iteration order in every port, so
+/// it is compared positionally.
+fn same_lost_rows(a: &[crate::dof_core::LostPathEntry], b: &[crate::dof_core::LostPathEntry]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x.entity_id != y.entity_id
+            || x.verdict_before != y.verdict_before
+            || x.verdict_after != y.verdict_after
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Builds the §4.10.2 counterexample the hard way: two options with **identical**

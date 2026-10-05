@@ -224,3 +224,44 @@ pub fn v011_entity(state: &SystemStateMatrix, skip: usize) -> String {
     }
     String::new()
 }
+/// The discriminating candidate of §6.3. Under `h_alt` it closes **two** means:
+/// trainee's own mean, which drives its Variety counter to zero, and the supervise
+/// mean, which removes the act path that would otherwise raise it back. Under the
+/// observed reading it closes nothing.
+///
+/// The pair is what makes the check discriminate. With the closure declared only for
+/// `h_alt`, the correct after-state has trainee at `DoF = 0` with no raising path — a
+/// `proven_unreachable` verdict, so `D2 = 1` — while a port that recomputes the
+/// counters from `closure[$observed$]` (the empty list) leaves trainee at its observed
+/// `DoF > 0` and charges nothing. The released §4.5 scene is the world of this
+/// fixture, so no new scene is needed.
+pub fn v011_h_only_closer() -> ActionOption {
+    let mut o = crate::options_v07::t1_mirror();
+    o.option_id = "h_only_closer".to_string();
+    o.projected_dof_delta.clear();
+    o.projected_by_hypothesis = HashMap::from([
+        (
+            crate::hypothesis::OBSERVED_HYPOTHESIS_ID.to_string(),
+            HashMap::from([("drone".to_string(), 0.1)]),
+        ),
+        (
+            "h_alt".to_string(),
+            HashMap::from([("drone".to_string(), 0.1)]),
+        ),
+    ]);
+    o.closed.clear();
+    o.closed_by_hypothesis = HashMap::from([
+        (
+            crate::hypothesis::OBSERVED_HYPOTHESIS_ID.to_string(),
+            Vec::new(),
+        ),
+        (
+            "h_alt".to_string(),
+            crate::options_v07::closures(&[
+                crate::fixture_v07::TRAINEE_MEAN,
+                crate::fixture_v07::SUPERVISE_MEAN,
+            ]),
+        ),
+    ]);
+    o
+}

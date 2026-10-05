@@ -209,3 +209,29 @@ def observed_only(observed):
 
     return HypothesisSet(members=[hypothesis_from(observed, "$observed$", {},
                                                   basis="observed singleton")])
+
+
+def h_only_closer(action_option=None):
+    """The discriminating candidate of §6.3.
+
+    Under `h_alt` it closes **two** means: trainee's own mean, which drives its
+    Variety counter to zero, and the supervise mean, which removes the act path
+    that would otherwise raise it back. Under the observed reading it closes
+    nothing.
+
+    The pair is what makes the check discriminate. With the closure declared only
+    for `h_alt`, the correct after-state has trainee at `DoF = 0` with no raising
+    path — a `proven_unreachable` verdict, so `D2 = 1` — while a port that
+    recomputes the counters from `closure["$observed$"]` (the empty list) leaves
+    trainee at its observed `DoF > 0` and charges nothing. The released §4.5
+    scene is the world of this fixture, so no new scene is needed.
+    """
+    import options_v07 as O
+    from fixture_v07 import SUPERVISE_MEAN, TRAINEE_MEAN
+
+    o = action_option if action_option is not None else O.t1_mirror()
+    o.option_id = "h_only_closer"
+    o.projected_dof_delta = {"$observed$": {"drone": 0.1}, "h_alt": {"drone": 0.1}}
+    o.closed = {"$observed$": [],
+                "h_alt": O.closures(TRAINEE_MEAN, SUPERVISE_MEAN)}
+    return o

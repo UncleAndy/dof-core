@@ -46,6 +46,20 @@ bool has_substring(const std::vector<std::string>& errs, const std::string& need
     return false;
 }
 
+// Compares two lost-path reports on the facts that carry meaning: the entity and the
+// two verdicts. Order is the fixture's sorted iteration order in every port, so it is
+// compared positionally.
+bool same_lost_rows(const std::vector<LostPathEntry>& a, const std::vector<LostPathEntry>& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i].entity_id != b[i].entity_id || a[i].verdict_before != b[i].verdict_before ||
+            a[i].verdict_after != b[i].verdict_after) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string num11(double x) { return num7(x, 6); }
 
 dof::Hypothesis hyp(const std::string& id, bool plausible, const SystemStateMatrix& state,
@@ -484,6 +498,43 @@ inline int run_harness_v011() {
     };
     check11(failures, "the self-closure guard (§4.4 guard 1) catches a per-hypothesis self-closure",
             !core.closure_error(guarded).empty());
+    std::cout << "\n";
+
+    // --- 6. §6.3: the after-state of a reading is its own -------------------
+    std::cout << "=== 6. §6.3: a reading's after-state is its own ===\n";
+    // `D2`/`D3` are recomputed on **that reading's** after-state — the pruned graph
+    // **and** the counters. An option that closes only under `h_alt` must be charged
+    // there. A port that prunes the graph with `closure[h]` but recomputes the
+    // counters from `closure[$observed$]` builds a state no hypothesis produces, and
+    // this fixture separates the two: trainee's own mean drives its counter to zero
+    // while the supervise mean removes the path that would raise it back.
+    const ActionOption closer_h = dof::v011_h_only_closer();
+    const std::vector<LostPathEntry> rows_h = core.lost_paths_for(state, closer_h, &ctx, "h_alt");
+    check11(failures, "§6.3: a reading's after-state is built from that reading's own closures",
+            rows_h.size() == 1 && rows_h[0].entity_id == "trainee" &&
+                rows_h[0].verdict_before == "reachable" &&
+                rows_h[0].verdict_after == "proven_unreachable",
+            std::to_string(rows_h.size()) + " rows");
+    check11(failures, "…and the observed reading of the same option charges nothing",
+            core.lost_paths(state, closer_h, &ctx).empty());
+
+    // The form is a declaration style, not a semantics: under one reading, two options
+    // declaring the same closure list — one flat, one per-hypothesis — must produce
+    // the same lost paths. This is the invariance the mixed triple breaks.
+    ActionOption flat_closer = dof::v011_h_only_closer();
+    flat_closer.option_id = "flat_closer";
+    flat_closer.closed = options_v07::closures(
+        {fixture_v07::kTraineeMean, fixture_v07::kSuperviseMean});
+    flat_closer.closed_by_hypothesis.clear();
+    const std::vector<LostPathEntry> rows_flat =
+        core.lost_paths_for(state, flat_closer, &ctx, "h_alt");
+    const std::vector<LostPathEntry> rows_per_h =
+        core.lost_paths_for(state, dof::v011_h_only_closer(), &ctx, "h_alt");
+    check11(failures,
+            "§3.3/§6.3: the per-hypothesis form agrees with the flat form on the same list",
+            same_lost_rows(rows_flat, rows_per_h),
+            std::to_string(rows_flat.size()) + " vs " + std::to_string(rows_per_h.size()) +
+                " rows");
     std::cout << "\n";
 
     return static_cast<int>(failures.size());

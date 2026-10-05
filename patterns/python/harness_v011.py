@@ -46,8 +46,10 @@ from calculus_core import (NET_DELTA_TOLERANCE, ActionOption, DOFCalculusCore,
                            ObservationContext, ResourceObservation,
                            SystemStateMatrix, tau_of)
 import fixture_v07
-from fixture_v011 import (TAU_FAST_MKS, TAU_MKS, T_REC_V011, default_scene, hset,
-                          hypothesis_from, observed_only, scene)
+import options_v07
+from fixture_v011 import (TAU_FAST_MKS, TAU_MKS, T_REC_V011, default_scene,
+                          h_only_closer, hset, hypothesis_from, observed_only,
+                          scene)
 from hypothesis import (Hypothesis, HypothesisSet, plausible_members,
                         resolved_members, validate_set)
 from orchestrator import DOFOrchestrator
@@ -677,6 +679,55 @@ def measurement_durations(t_m: float, t_v: float):
     return {lens: {"t_m": t_m, "t_v": t_v} for lens in ("variety", "options", "constraint")}
 
 
+def test_after_state_is_own():
+    """§6.3: the after-state of `D2`/`D3` is **that reading's** own.
+
+    The entry is computed from one reading's own triple — the state `S | h`, the
+    projection `projection[h]` and the closures `closure[h]` — and the clause is
+    explicit that an implementation MUST NOT read one reading's closures against
+    another reading's state. `D2`/`D3` are recomputed on that reading's
+    after-state: the pruned graph **and** the counters.
+
+    This is the regression case the release was missing. Every v0.11 fixture
+    declared the same closure under every reading, so a port that pruned the graph
+    with `closure[h]` but recomputed the counters from `closure["$observed$"]`
+    produced the same answer on all of them — three ports were identically wrong
+    and the suites said "compatible". Here the two differ: trainee's own mean
+    drives its counter to zero while the supervise mean removes the path that
+    would raise it back.
+    """
+    print("=== §6.3: a reading's after-state is its own ===")
+    orch = DOFOrchestrator()
+    state = orch.mapper.poll_environment(fixture_v07.t1_scene())
+    ctx = orch.mapper.last_observation
+    core = orch.core
+
+    closer_h = h_only_closer()
+    rows_h = core.lost_paths(state, closer_h, ctx, "h_alt")
+    check("§6.3: a reading's after-state is built from that reading's own closures",
+          len(rows_h) == 1 and rows_h[0]["entity_id"] == "trainee"
+          and rows_h[0]["verdict_before"] == "reachable"
+          and rows_h[0]["verdict_after"] == "proven_unreachable",
+          f"{len(rows_h)} rows")
+    check("…and the observed reading of the same option charges nothing",
+          core.lost_paths(state, closer_h, ctx) == [])
+
+    # The form is a declaration style, not a semantics: under one reading, two
+    # options declaring the same closure list — one flat, one per-hypothesis — must
+    # produce the same lost paths. This is the invariance the mixed triple breaks.
+    flat_closer = h_only_closer()
+    flat_closer.option_id = "flat_closer"
+    flat_closer.closed = options_v07.closures(fixture_v07.TRAINEE_MEAN,
+                                              fixture_v07.SUPERVISE_MEAN)
+    rows_flat = core.lost_paths(state, flat_closer, ctx, "h_alt")
+    rows_per_h = core.lost_paths(state, h_only_closer(), ctx, "h_alt")
+    check("§3.3/§6.3: the per-hypothesis form agrees with the flat form on the same list",
+          [(r["entity_id"], r["verdict_before"], r["verdict_after"]) for r in rows_flat]
+          == [(r["entity_id"], r["verdict_before"], r["verdict_after"])
+              for r in rows_per_h],
+          f"{len(rows_flat)} vs {len(rows_per_h)} rows")
+
+
 def _decl_for(raw):
     orch = DOFOrchestrator()
     orch.mapper.poll_environment(raw)
@@ -700,6 +751,7 @@ def main():
     test_fingerprints()
     test_measurement_durations()
     test_robust_reversibility()
+    test_after_state_is_own()
     print(f"\nchecks: {PASS + FAIL}, failures: {FAIL}")
     return 0 if FAIL == 0 else 1
 

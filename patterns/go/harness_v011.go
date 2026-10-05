@@ -343,6 +343,63 @@ func runHarnessV011() {
 	check("the self-closure guard (§4.4 guard 1) catches a per-hypothesis self-closure",
 		core.validateClosure(guarded) != nil)
 	fmt.Println()
+
+	// --- 6. §6.3: the after-state of a reading is its own -------------------
+	fmt.Println("=== 6. §6.3: a reading's after-state is its own ===")
+	// `D2`/`D3` are recomputed on **that reading's** after-state — the pruned graph
+	// **and** the counters. An option that closes only under `h_alt` must be charged
+	// there. A port that prunes the graph with `closure[h]` but recomputes the
+	// counters from `closure[$observed$]` builds a state no hypothesis produces, and
+	// this fixture separates the two: trainee's own mean drives its counter to zero
+	// while the supervise mean removes the path that would raise it back.
+	closerH := v011HOnlyCloser()
+	rowsH := core.lostPathsFor(state, closerH, ctx, "h_alt")
+	check("§6.3: a reading's after-state is built from that reading's own closures",
+		len(rowsH) == 1 && rowsH[0].EntityID == "trainee" &&
+			rowsH[0].VerdictBefore == "reachable" &&
+			rowsH[0].VerdictAfter == "proven_unreachable",
+		fmt.Sprintf("%d rows", len(rowsH)))
+	check("…and the observed reading of the same option charges nothing",
+		len(core.lostPaths(state, closerH, ctx)) == 0)
+
+	// The form is a declaration style, not a semantics: two options declaring the
+	// same closure list — one flat, one per-hypothesis — must produce the same lost
+	// paths under the same reading. This is the invariance the mixed triple breaks.
+	flatCloser := t1Mirror()
+	flatCloser.OptionID = "flat_closer"
+	flatCloser.ProjectedDoFDelta = nil
+	flatCloser.ProjectedByHypothesis = map[string]map[string]float64{
+		ObservedHypothesisID: {"drone": 0.1},
+		"h_alt":              {"drone": 0.1},
+	}
+	flatCloser.Closed = closures(TraineeMeanID, SuperviseMeanID)
+	flatCloser.ClosedByHypothesis = nil
+	// The per-hypothesis option declares the same list **under `h_alt`**; the flat
+	// option declares it under every reading, so under `h_alt` the two are the same
+	// declaration in two forms, and the answer must not depend on which form was used.
+	perHCloser := v011HOnlyCloser()
+	rowsFlat := core.lostPathsFor(state, flatCloser, ctx, "h_alt")
+	rowsPerH := core.lostPathsFor(state, perHCloser, ctx, "h_alt")
+	check("§3.3/§6.3: the per-hypothesis form agrees with the flat form on the same list",
+		sameLostRows(rowsFlat, rowsPerH),
+		fmt.Sprintf("%d vs %d rows", len(rowsFlat), len(rowsPerH)))
+	fmt.Println()
+}
+
+// sameLostRows compares two lost-path reports on the facts that carry meaning: the
+// entity and the two verdicts. Order is the fixture's sorted iteration order in
+// every port, so it is compared positionally.
+func sameLostRows(a, b []LostPathEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].EntityID != b[i].EntityID || a[i].VerdictBefore != b[i].VerdictBefore ||
+			a[i].VerdictAfter != b[i].VerdictAfter {
+			return false
+		}
+	}
+	return true
 }
 
 // selectsReversible builds the §4.10.2 counterexample the hard way: two options

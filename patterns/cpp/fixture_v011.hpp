@@ -19,9 +19,11 @@
 #include <vector>
 
 #include "dof_core.hpp"
+#include "fixture_v07.hpp"
 #include "graph_mapper.hpp"
 #include "hypothesis.hpp"
 #include "measurement.hpp"
+#include "options_v07.hpp"
 
 namespace dof {
 
@@ -205,6 +207,34 @@ inline std::string v011_entity(const SystemStateMatrix& state, std::size_t skip)
         }
     }
     return std::string();
+}
+
+// The discriminating candidate of §6.3. Under `h_alt` it closes **two** means:
+// trainee's own mean, which drives its Variety counter to zero, and the supervise
+// mean, which removes the act path that would otherwise raise it back. Under the
+// observed reading it closes nothing.
+//
+// The pair is what makes the check discriminate. With the closure declared only for
+// `h_alt`, the correct after-state has trainee at `DoF = 0` with no raising path — a
+// `proven_unreachable` verdict, so `D2 = 1` — while a port that recomputes the
+// counters from `closure[$observed$]` (the empty list) leaves trainee at its observed
+// `DoF > 0` and charges nothing. The released §4.5 scene is the world of this
+// fixture, so no new scene is needed.
+inline ActionOption v011_h_only_closer() {
+    ActionOption o = options_v07::t1_mirror();
+    o.option_id = "h_only_closer";
+    o.projected_dof_delta.clear();
+    o.projected_by_hypothesis = {
+        {kObservedHypothesisId, {{"drone", 0.1}}},
+        {"h_alt", {{"drone", 0.1}}},
+    };
+    o.closed.clear();
+    o.closed_by_hypothesis = {
+        {kObservedHypothesisId, {}},
+        {"h_alt", options_v07::closures({fixture_v07::kTraineeMean,
+                                         fixture_v07::kSuperviseMean})},
+    };
+    return o;
 }
 
 }  // namespace dof
