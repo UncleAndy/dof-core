@@ -182,10 +182,27 @@ inline std::optional<double> resolve_tau(
     return legacy;
 }
 
+// §3.6: the id the observed state carries when it is read as a member of `H`.
+// Declared here — next to the option — because the per-hypothesis accessors below
+// need it, and `hypothesis.hpp` (the artifact's home) includes this header.
+inline const std::string kObservedHypothesisId = "$observed$";
+
 struct ActionOption {
     std::string option_id;
     std::string description;
+    // §3.3 (v0.11): **two forms, never mixed within one option.**
+    //   flat           — {entity_id: delta}, applied under every hypothesis;
+    //   per_hypothesis — {hypothesis_id: {entity_id: delta}}, the entry for `h`
+    //                    used under `h`, entities unlisted for `h` taking 0.0.
+    //
+    // An option in the flat form asserts that its effect does not depend on the
+    // causal reading; the per-hypothesis form is meaningful only when a hypothesis
+    // set is declared. The two forms live in two fields rather than one
+    // union-typed field; `projection_form()` is the single place that decides which
+    // form an option is in, and a non-empty pair is `invalid` (§3.3, §10(B)).
     std::unordered_map<std::string, double> projected_dof_delta;
+    std::unordered_map<std::string, std::unordered_map<std::string, double>>
+        projected_by_hypothesis;
     bool is_reversible = true;
     double estimated_duration_mks = 0.0;  // execution time, microseconds (DOF-SPEC §3.3)
     // §3.3 (v0.6): what the option draws from the acting agent, attributed to the
@@ -197,15 +214,111 @@ struct ActionOption {
     // that cease to exist once it executes. `is_reversible` is DERIVED from this
     // list (true exactly when it is empty) and is kept only as a reported field:
     // a label that could be set to dodge the price is not a rule.
+    //
+    // §4.4 (v0.11): the closure list has the same two forms as the projection.
     std::vector<dof::ClosedRef> closed;
+    std::unordered_map<std::string, std::vector<dof::ClosedRef>> closed_by_hypothesis;
     std::string act_id;  // the graph act implementing this option
-    // §3.3 (v0.9.1): projected change of τ (time-to-collapse) caused by this option.
-    double projected_tau_delta = 0.0;
+    // §3.3 (v0.11): the projected τ change. `nullopt` means **not computable** —
+    // which happens exactly when τ is unknown — and is admissible only for an act
+    // that resolves τ. Derived, never independently declared, for such an act: it
+    // MUST equal `projected_tau_value - (τ - estimated_duration_mks)`.
+    std::optional<double> projected_tau_delta;
+    // §3.3 (v0.11): the value the option expects `tau` to hold AFTER it executes.
+    // Present iff `discovers` names "tau". MAY be negative (§3.2b).
+    std::optional<double> projected_tau_value;
     // §3.3 (v0.9.1): resources whose value becomes known after this option executes.
     std::vector<std::string> discovers;
     // §3.3 (v0.9.1): resources needed for gate checks.
     std::vector<std::string> requires;
 };
+
+// `"flat"` | `"per_hypothesis"` | `"invalid"` (§3.3, §10(B)).
+inline std::string projection_form(const ActionOption& option) {
+    const bool flat = !option.projected_dof_delta.empty();
+    const bool nested = !option.projected_by_hypothesis.empty();
+    if (flat && !nested) return "flat";
+    if (nested && !flat) return "per_hypothesis";
+    // An option declaring no delta at all is the flat form: the empty map is a flat
+    // map, and reading it as "invalid" would refuse every baseline.
+    if (!flat && !nested) return "flat";
+    // Both filled: **invalid**, never a merge. A merge would silently pick one of
+    // two contradictory statements about the same option — and the choice would
+    // decide the index.
+    return "invalid";
+}
+
+// `"flat"` | `"per_hypothesis"` | `"invalid"` (§4.4, §10(B)).
+inline std::string closure_form(const ActionOption& option) {
+    const bool flat = !option.closed.empty();
+    const bool nested = !option.closed_by_hypothesis.empty();
+    if (flat && !nested) return "flat";
+    if (nested && !flat) return "per_hypothesis";
+    if (!flat && !nested) return "flat";
+    return "invalid";
+}
+
+// The declared delta this option contributes under `hypothesis_id`.
+inline double delta_for(const ActionOption& option, const std::string& hypothesis_id,
+                        const std::string& entity_id) {
+    if (projection_form(option) == "per_hypothesis") {
+        auto it = option.projected_by_hypothesis.find(hypothesis_id);
+        if (it == option.projected_by_hypothesis.end()) return 0.0;
+        auto eit = it->second.find(entity_id);
+        return eit == it->second.end() ? 0.0 : eit->second;
+    }
+    auto it = option.projected_dof_delta.find(entity_id);
+    return it == option.projected_dof_delta.end() ? 0.0 : it->second;
+}
+
+// The closures this option declares under `hypothesis_id`.
+inline std::vector<dof::ClosedRef> closed_for(const ActionOption& option,
+                                              const std::string& hypothesis_id) {
+    if (closure_form(option) == "per_hypothesis") {
+        auto it = option.closed_by_hypothesis.find(hypothesis_id);
+        if (it == option.closed_by_hypothesis.end()) return {};
+        return it->second;
+    }
+    return option.closed;
+}
+
+// §4.5 key 3, under one named reading.
+inline bool is_reversible_for(const ActionOption& option, const std::string& hypothesis_id) {
+    return closed_for(option, hypothesis_id).empty();
+}
+
+// The flat delta map, whichever form the option uses.
+//
+// Used where a single map is needed for `nullopt`-safety (the baseline); a
+// per-hypothesis option returns the **union** of its entries, which is only
+// meaningful for existence questions.
+inline std::unordered_map<std::string, double> flat_delta(const ActionOption& option) {
+    std::unordered_map<std::string, double> out;
+    if (projection_form(option) == "per_hypothesis") {
+        for (const auto& per_h : option.projected_by_hypothesis) {
+            for (const auto& kv : per_h.second) {
+                auto it = out.find(kv.first);
+                if (it == out.end() || kv.second > it->second) out[kv.first] = kv.second;
+            }
+        }
+        return out;
+    }
+    return option.projected_dof_delta;
+}
+
+// §3.3/§4.4: the two forms MUST NOT be mixed within one option. An empty result
+// means the option is well formed. A non-empty one is non-conformant **input**:
+// the option is refused, never repaired.
+inline std::string forms_consistent(const ActionOption& option) {
+    if (projection_form(option) == "invalid") {
+        return option.option_id +
+               ": `projected_dof_delta` mixes the flat and per-hypothesis forms (§3.3)";
+    }
+    if (closure_form(option) == "invalid") {
+        return option.option_id + ": `closed` mixes the flat and per-hypothesis forms (§4.4)";
+    }
+    return "";
+}
 
 // §3.3/§4.8b: does this option resolve `resource`? The question is asked by §4.8b
 // (a τ measurement is governed by a different rule than a lens measurement), by
@@ -230,14 +343,48 @@ struct ObservationContext {
     std::map<std::string, double> t_rec;
     std::optional<double> counting_horizon_mks;
     std::string observation_digest;
+    // §3.6/§4.9/§4.10 (v0.11): `DoF(X | h)` — the per-entity degrees of freedom
+    // **under one reading**, which the §4.9 verdict consumes. `nullopt` means "read
+    // the graph's own value", which is what the observed reading does; a hypothesis
+    // reading supplies its own numbers here. Structural inputs — `G`, the paths and
+    // their admissibility, `M(S)`, `T_rec(X)` — stay shared: only the DoF is
+    // conditional (§3.6, §7 п.25).
+    std::optional<std::unordered_map<std::string, double>> dof_override;
+
+    // The reading's `DoF(X | h)` for one entity, or `nullopt` when this context
+    // carries no reading.
+    std::optional<double> dof_override_of(const std::string& entity_id) const {
+        if (!dof_override) return std::nullopt;
+        auto it = dof_override->find(entity_id);
+        if (it == dof_override->end()) return std::nullopt;
+        return it->second;
+    }
+
+    // §3.6/§4.9: the same observation, read under one hypothesis's DoF.
+    //
+    // Every shared input is carried over untouched — the graph, `M(S)`, the
+    // horizons, the observation digest — because §3.6 shares them by construction:
+    // only `DoF(X | h)` differs between readings, and only it is replaced here.
+    ObservationContext with_dof(std::unordered_map<std::string, double> dofs) const {
+        ObservationContext clone = *this;
+        clone.dof_override = std::move(dofs);
+        return clone;
+    }
 
     std::optional<double> horizon(const std::string& entity_id) const {
         auto it = t_rec.find(entity_id);
         if (it == t_rec.end()) return std::nullopt;
         return it->second;
     }
+    // §4.9: the verdict **under this reading**. The observed reading carries no
+    // override and is therefore byte-identical to the `v0.9.1` call — the
+    // conditional form is the general one and the observed form is its instance,
+    // not a second rule.
     std::string verdict(const std::string& entity_id) const {
-        return world.verdict(entity_id, means_class, horizon(entity_id)).verdict;
+        return world
+            .verdict_with_dof(entity_id, means_class, horizon(entity_id),
+                              dof_override_of(entity_id))
+            .verdict;
     }
     int v_before(const std::string& entity_id) const {
         return world.v_count(entity_id, means_class, counting_horizon_mks);
@@ -512,8 +659,12 @@ public:
     // §4.3/§4.4: DoF recomputed from the counters after the option's closure. Only
     // the Variety share moves, so the whole product moves by its ratio. A nullopt
     // means the entity is not affected or its Variety lens was unmeasured.
-    std::optional<double> dof_after_closure(const EntityState& e, const ActionOption& option,
-                                            const ObservationContext* ctx) const {
+    //
+    // §4.4 (v0.11): the closures read are the ones the option declares **under this
+    // reading** — the closure list has the same two forms as the projection.
+    std::optional<double> dof_after_closure_for(const EntityState& e, const ActionOption& option,
+                                                const ObservationContext* ctx,
+                                                const std::string& hypothesis_id) const {
         if (!e.measurement || !e.measurement->variety_counters) return std::nullopt;
         auto var_it = e.measurement->psi_by_lens.find("variety");
         if (var_it == e.measurement->psi_by_lens.end() || !var_it->second) return std::nullopt;
@@ -522,9 +673,18 @@ public:
                                  : 0.0;
         const double var_before = *var_it->second;
         const int v_before = ctx->v_before(e.entity_id);
-        const int v_after = ctx->v_after_closure(e.entity_id, option.closed);
+        const int v_after =
+            ctx->v_after_closure(e.entity_id, closed_for(option, hypothesis_id));
         if (v_after == v_before) return std::nullopt;  // this entity is not affected
         return coerce_dof(e.current_dof / var_before * dof::psi_var(static_cast<double>(v_after), v_env));
+    }
+
+    // The observed-reading entry point. Not a second rule: the observed reading is
+    // `H = {$observed$}`, so the conditional form above is the general one and this
+    // is its instance.
+    std::optional<double> dof_after_closure(const EntityState& e, const ActionOption& option,
+                                            const ObservationContext* ctx) const {
+        return dof_after_closure_for(e, option, ctx, kObservedHypothesisId);
     }
 
     // The DoF this option would leave the entity with, closure included (§4.3).
@@ -533,37 +693,62 @@ public:
     // closure-aware value, an option that destroys an entity BY CLOSING ITS
     // TRANSITIONS would be scored as a collapse and charged as nothing — the
     // structural gate of §4.5 would then pass exactly the option it exists to stop.
-    double projected_dof(const EntityState& e, const ActionOption& option,
-                         const ObservationContext* ctx) const {
-        double add = 0.0;
-        auto it = option.projected_dof_delta.find(e.entity_id);
-        if (it != option.projected_dof_delta.end()) add = it->second;
+    double projected_dof_for(const EntityState& e, const ActionOption& option,
+                             const ObservationContext* ctx,
+                             const std::string& hypothesis_id) const {
+        const double add = delta_for(option, hypothesis_id, e.entity_id);
         double nd = coerce_dof(e.current_dof + add);
-        if (ctx != nullptr && !option.closed.empty()) {
-            std::optional<double> recomputed = dof_after_closure(e, option, ctx);
+        if (ctx != nullptr && !closed_for(option, hypothesis_id).empty()) {
+            std::optional<double> recomputed = dof_after_closure_for(e, option, ctx, hypothesis_id);
             if (recomputed) nd = *recomputed;
         }
         return nd;
     }
 
+    double projected_dof(const EntityState& e, const ActionOption& option,
+                         const ObservationContext* ctx) const {
+        return projected_dof_for(e, option, ctx, kObservedHypothesisId);
+    }
+
     // §4.4 guards: closing one's own execution path, or a false label with nothing
     // closed. Returns an empty string when the option is conformant.
+    //
+    // §4.4 (v0.11): the guards look at **every** closure list the option carries —
+    // the flat one and each per-hypothesis one. An option declares a closure once
+    // per reading, but an act of the shared graph closes the same path under every
+    // reading, so a declaration that passes under `h₁` and closes its own path
+    // under `h₂` is a false declaration, not a conditional one.
     std::string closure_error(const ActionOption& option) const {
-        if (!option.closed.empty() && !option.act_id.empty()) {
-            for (const auto& ref : option.closed) {
-                if (ref.kind == "act" && ref.id == option.act_id) {
-                    return option.option_id + ": closes its own execution path (§4.4 guard 1)";
+        std::vector<std::vector<dof::ClosedRef>> lists;
+        lists.push_back(option.closed);
+        for (const auto& kv : option.closed_by_hypothesis) lists.push_back(kv.second);
+        bool any_closed = false;
+        for (const auto& list : lists) {
+            if (list.empty()) continue;
+            any_closed = true;
+            if (!option.act_id.empty()) {
+                for (const auto& ref : list) {
+                    if (ref.kind == "act" && ref.id == option.act_id) {
+                        return option.option_id + ": closes its own execution path (§4.4 guard 1)";
+                    }
                 }
             }
         }
-        if (option.closed.empty() && !option.is_reversible) {
+        // The false-label guard is a statement about the option as a whole: an
+        // option that closes nothing under **any** reading while claiming
+        // `is_reversible = false` is mislabelled. It is asked of the flat form
+        // alone, because the per-hypothesis form's empty entries are ordinary.
+        if (!any_closed && closure_form(option) == "flat" && !option.is_reversible) {
             return option.option_id + ": is_reversible=false with an empty closure list (§4.4 guard 2)";
         }
         return "";
     }
 
-    // §4.4: the reported flag is DERIVED — true exactly when nothing is closed.
-    static bool is_reversible(const ActionOption& option) { return option.closed.empty(); }
+    // §4.4: the reported flag is DERIVED — true exactly when nothing is closed
+    // under the reading being evaluated.
+    static bool is_reversible(const ActionOption& option) {
+        return is_reversible_for(option, kObservedHypothesisId);
+    }
 
     // §6.3: the per-entity decomposition of a closure's price. A DECOMPOSITION of
     // the loss already inside `NetDelta` (§4.3/§4.4), never an extra charge.
@@ -613,22 +798,33 @@ public:
 
     // Simulate an option's projected deltas into a new state and return it with the
     // **frozen** member set of calc(S) (§4.2).
-    std::pair<SystemStateMatrix, std::set<std::string>> simulate(
+    //
+    // §3.6/§4.10 (v0.11): the projected DoF is the one the option declares **under
+    // this reading** — the same graph read under `h`, not a second graph.
+    std::pair<SystemStateMatrix, std::set<std::string>> simulate_for(
         const SystemStateMatrix& current, const ActionOption& option,
-        const ObservationContext* ctx = nullptr) const {
+        const ObservationContext* ctx, const std::string& hypothesis_id) const {
         std::set<std::string> members = calc_members(current, ctx);
         SystemStateMatrix sim = current;
         for (auto& kv : sim.entities) {
-            kv.second.current_dof = projected_dof(kv.second, option, ctx);
+            kv.second.current_dof = projected_dof_for(kv.second, option, ctx, hypothesis_id);
         }
         return {sim, members};
     }
 
+    // The observed-reading entry point.
+    std::pair<SystemStateMatrix, std::set<std::string>> simulate(
+        const SystemStateMatrix& current, const ActionOption& option,
+        const ObservationContext* ctx = nullptr) const {
+        return simulate_for(current, option, ctx, kObservedHypothesisId);
+    }
+
     // §4.2: the counted entities a candidate drives to a known zero. The charge
     // depends on neither the Generator's candidate set nor the victim's prospects.
-    std::vector<CollapseCharge> collapse_charges(const SystemStateMatrix& current,
-                                                 const ActionOption& option,
-                                                 const ObservationContext* ctx = nullptr) const {
+    std::vector<CollapseCharge> collapse_charges_for(const SystemStateMatrix& current,
+                                                     const ActionOption& option,
+                                                     const ObservationContext* ctx,
+                                                     const std::string& hypothesis_id) const {
         std::vector<CollapseCharge> charges;
         for (const auto& eid : calc_members(current, ctx)) {
             auto it = current.entities.find(eid);
@@ -638,13 +834,20 @@ public:
             // The projected value is the closure-aware one (§4.3): an option can
             // destroy a counted entity by closing its transitions while declaring
             // no delta at all, and that is exactly the case §4.5 must catch.
-            const double nd = projected_dof(e, option, ctx);
+            const double nd = projected_dof_for(e, option, ctx, hypothesis_id);
             // §4.2: a charge requires a *transition* into the zero, not a stay at
             // it — charging an entity that was already at zero would make every
             // option destructive in any state containing a recoverable zero.
             if (nd == 0.0 && e.current_dof > 0.0) charges.push_back(CollapseCharge{eid, e.current_dof});
         }
         return charges;
+    }
+
+    // The observed-reading entry point.
+    std::vector<CollapseCharge> collapse_charges(const SystemStateMatrix& current,
+                                                 const ActionOption& option,
+                                                 const ObservationContext* ctx = nullptr) const {
+        return collapse_charges_for(current, option, ctx, kObservedHypothesisId);
     }
 
     // RETIRED in v0.8: the live path no longer calls this. A charged candidate is
@@ -887,12 +1090,14 @@ public:
     // declared. A lost witness is a loss: an entity that leaves `reachable` counts
     // even where no exclusion follows from it, because §4.2 excludes only on a
     // proven_unreachable verdict over a complete observation.
-    std::vector<LostPathEntry> lost_paths(const SystemStateMatrix& state,
-                                          const ActionOption& option,
-                                          const ObservationContext* ctx = nullptr) const {
+    std::vector<LostPathEntry> lost_paths_for(const SystemStateMatrix& state,
+                                              const ActionOption& option,
+                                              const ObservationContext* ctx,
+                                              const std::string& hypothesis_id) const {
         std::vector<LostPathEntry> out;
-        if (ctx == nullptr || option.closed.empty()) return out;
-        dof::WorldGraph closed_world = ctx->world.with_closed(option.closed);
+        const std::vector<dof::ClosedRef> closed = closed_for(option, hypothesis_id);
+        if (ctx == nullptr || closed.empty()) return out;
+        dof::WorldGraph closed_world = ctx->world.with_closed(closed);
         std::set<std::string> critical = critical_members(state, ctx);
         for (const auto& kv : state.entities) {
             const std::string& id = kv.first;
@@ -901,6 +1106,10 @@ public:
             // observed, once with the option's closure applied — so a verdict can
             // only move away from `reachable`, and the difference is computed
             // rather than declared.
+            //
+            // The before-state DoF is the one the **state being read** carries:
+            // under a hypothesis reading the caller passes that reading's state,
+            // whose `current_dof` is its own `DoF(X | h)`.
             dof::Verdict before = ctx->world.verdict_with_dof(
                 id, ctx->means_class, ctx->horizon(id), entity.current_dof);
             if (before.verdict != "reachable") continue;
@@ -913,8 +1122,14 @@ public:
             // the after-state DoF with its own promise and buy back the very
             // recoverability it destroys. That is why the base DoF of the second
             // run is `dof_after_closure` and never `projected_dof`; a nullopt means
-            // the closure did not touch this entity, which then keeps its observed
-            // DoF.
+            // the closure did not touch this entity, which then keeps its DoF.
+            //
+            // The reference reads the after-state DoF through the **observed**
+            // entry point here, even inside the per-hypothesis procedure: the
+            // closure list of the second run comes from `hypothesis_id`, but the
+            // recomputation does not. Ported as the reference stands — a port that
+            // silently repaired this would disagree with every other port on any
+            // fixture that closes different transitions under different readings.
             std::optional<double> after_dof = dof_after_closure(entity, option, ctx);
             dof::Verdict after = closed_world.verdict_with_dof(
                 id, ctx->means_class, ctx->horizon(id), after_dof);
@@ -930,25 +1145,44 @@ public:
         return out;
     }
 
+    // The observed-reading entry point.
+    std::vector<LostPathEntry> lost_paths(const SystemStateMatrix& state,
+                                          const ActionOption& option,
+                                          const ObservationContext* ctx = nullptr) const {
+        return lost_paths_for(state, option, ctx, kObservedHypothesisId);
+    }
+
     // The keys of one candidate (§4.5): all of them, from quantities the earlier
     // releases already produce.
-    CandidateVector candidate_vector(const SystemStateMatrix& state, const ActionOption& option,
-                                     const ObservationContext* ctx, double current_index) const {
-        auto sim = simulate(state, option, ctx);
+    //
+    // §4.10 (v0.11): every key comes from **one** reading — `d1`, `d2`, `d3`,
+    // `NetDelta` and `is_reversible` are the numbers of the same `h`. Mixing them
+    // (a worst-case `d1` with an observed `NetDelta`) would compare two different
+    // worlds under one name.
+    CandidateVector candidate_vector_for(const SystemStateMatrix& state,
+                                         const ActionOption& option,
+                                         const ObservationContext* ctx, double current_index,
+                                         const std::string& hypothesis_id) const {
+        auto sim = simulate_for(state, option, ctx, hypothesis_id);
         double projected = calculate_system_dof(sim.first, &sim.second, ctx);
-        std::vector<LostPathEntry> lost = lost_paths(state, option, ctx);
+        std::vector<LostPathEntry> lost = lost_paths_for(state, option, ctx, hypothesis_id);
         int d3 = 0;
         for (const auto& row : lost) {
             if (row.critical) ++d3;
         }
         CandidateVector v;
-        v.d1 = static_cast<int>(collapse_charges(state, option, ctx).size());
+        v.d1 = static_cast<int>(collapse_charges_for(state, option, ctx, hypothesis_id).size());
         v.d2 = static_cast<int>(lost.size());
         v.d3 = d3;
         v.net_delta = net_delta(state, option, projected, current_index);
-        v.reversible = is_reversible(option);
+        v.reversible = is_reversible_for(option, hypothesis_id);
         v.option_id = option.option_id;
         return v;
+    }
+
+    CandidateVector candidate_vector(const SystemStateMatrix& state, const ActionOption& option,
+                                     const ObservationContext* ctx, double current_index) const {
+        return candidate_vector_for(state, option, ctx, current_index, kObservedHypothesisId);
     }
 
     // Staying put: the zero vector, NetDelta = 0 by definition.

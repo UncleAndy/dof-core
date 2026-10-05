@@ -226,6 +226,12 @@ if [ -d "$REPO/patterns/cpp" ]; then
         report_v07 cpp-v07 "$OUT_DIR/cpp_v07.out"
         "$OUT_DIR/dof_cpp" v06 > "$OUT_DIR/cpp_v06.out" 2>&1
         report_historical cpp-v06 "$OUT_DIR/cpp_v06.out"
+        if [ -f "$REPO/patterns/cpp/harness_v011.hpp" ]; then
+            "$OUT_DIR/dof_cpp" v011 > "$OUT_DIR/cpp_v011.out" 2>&1
+            report_v011 cpp-v011 "$OUT_DIR/cpp_v011.out"
+        else
+            printf '%-14s   (v0.11 harness absent — pending)\n' cpp-v011
+        fi
     fi
 fi
 

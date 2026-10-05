@@ -123,7 +123,7 @@ inline int run_harness_v091() {
         option.estimated_duration_mks = 1000.0;
         option.projected_resource_delta = {{"patient", {{"energy", -5.0}}}};
         option.projected_tau_delta = 5000.0;
-        double tau_after = tau_before - option.estimated_duration_mks + option.projected_tau_delta;
+        double tau_after = tau_before - option.estimated_duration_mks + *option.projected_tau_delta;
         check91("CPR increases τ", tau_after > tau_before);
         check91("CPR delta is +4000 net", std::abs(tau_after - tau_before - 4000.0) < 1e-9);
     }

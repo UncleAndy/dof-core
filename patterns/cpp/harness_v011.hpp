@@ -1,0 +1,490 @@
+// Conformance harness of the C++ port, DOF-SPEC v0.11 (§3.3, §3.4.2, §3.6, §4.4,
+// §4.8b, §4.10).
+//
+// This is the release's own harness for the conditional layer. `v07`, `v08` and
+// `v091` are left untouched: they are the evidence of their releases, and their
+// fingerprints are asserted here again as the precondition of everything below —
+// a moved digest is an error to be fixed, not a new version.
+//
+// Sections, in order: one ruler, two readings; the hypothesis set and its five
+// validation rules; absence and emptiness reduce to the observed singleton; the
+// two forms of §3.3/§4.4 and the refusal to mix them; the temporal condition of
+// §4.8b; the robust selection of §4.10.
+
+#pragma once
+
+#include <cmath>
+#include <iostream>
+#include <map>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "conditional.hpp"
+#include "fixture_v011.hpp"
+#include "harness_v07.hpp"  // check7, near, num7, the frozen digests
+#include "hypothesis.hpp"
+
+namespace {
+
+// The mark is `"  OK   "` — the same three spaces the other ports print, so that
+// the cross-port verifier's row greps (`^  OK   the ruler is shared…`) read this
+// port's evidence exactly as they read the others'.
+void check11(std::vector<std::string>& failures, const std::string& name, bool ok,
+             const std::string& detail = "") {
+    std::cout << (ok ? "  OK   " : "  FAIL  ") << name;
+    if (!detail.empty()) std::cout << "  " << detail;
+    std::cout << "\n";
+    if (!ok) failures.push_back(name);
+}
+
+bool has_substring(const std::vector<std::string>& errs, const std::string& needle) {
+    for (const auto& e : errs) {
+        if (e.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+std::string num11(double x) { return num7(x, 6); }
+
+dof::Hypothesis hyp(const std::string& id, bool plausible, const SystemStateMatrix& state,
+                    const std::string& basis) {
+    dof::Hypothesis h;
+    h.id = id;
+    h.plausible = plausible;
+    h.state = state;
+    h.collapse_source_candidates.clear();
+    h.basis = basis;
+    return h;
+}
+
+using dof::ConditionalVector;
+
+const std::map<std::string, ConditionalVector>& per_h_of(
+    const std::map<std::string, std::map<std::string, ConditionalVector>>& all,
+    const std::string& option_id) {
+    static const std::map<std::string, ConditionalVector> kEmpty;
+    auto it = all.find(option_id);
+    return (it == all.end()) ? kEmpty : it->second;
+}
+
+const ConditionalVector& vector_of(const std::map<std::string, ConditionalVector>& per_h,
+                                   const std::string& hypothesis_id) {
+    static const ConditionalVector kEmpty;
+    auto it = per_h.find(hypothesis_id);
+    return (it == per_h.end()) ? kEmpty : it->second;
+}
+
+double robust_key(const dof::ConditionalSelection& selection, const std::string& option_id) {
+    auto it = selection.net_delta_robust.find(option_id);
+    return (it == selection.net_delta_robust.end()) ? 0.0 : it->second;
+}
+
+// Builds the §4.10.2 counterexample the hard way: two options with **identical**
+// robust deltas, one of which declares a closure under the second reading only.
+// The closure names a mean that exists nowhere in the graph, so it costs nothing in
+// key 2 — no charge, no lost path — and the decision is made by key 3 alone.
+//
+// The ids are chosen so the check discriminates: the closing option sorts FIRST.
+// Reading key 3 from the observed reading alone would call it reversible, keep it
+// as a survivor and elect it lexicographically; the robust reading drops it.
+bool selects_reversible(const DOFCalculusCore& core, const SystemStateMatrix& state,
+                        const ObservationContext& ctx,
+                        const std::vector<dof::Hypothesis>& members) {
+    const std::string entity = dof::v011_entity(state, 0);
+    ActionOption closing = dof::v011_option("a_closing", entity, 0.5);
+    closing.projected_dof_delta.clear();
+    closing.projected_by_hypothesis = {
+        {kObservedHypothesisId, {{entity, 0.5}}},
+        {"h_alt", {{entity, 0.5}}},
+    };
+    dof::ClosedRef absent;
+    absent.kind = "mean";
+    absent.id = "v011_absent_mean";
+    closing.closed_by_hypothesis = {
+        {kObservedHypothesisId, {}},
+        {"h_alt", {absent}},
+    };
+    const ActionOption open = dof::v011_option("b_open", entity, 0.5);
+    auto result = dof::select_conditional(core, state, {closing, open}, members, ctx);
+    const dof::ConditionalSelection& selection = result.second;
+    if (std::fabs(robust_key(selection, "a_closing") - robust_key(selection, "b_open")) >
+        DOFCalculusCore::net_delta_tolerance) {
+        return false;  // key 2 separated them: this is not the key-3 counterexample
+    }
+    return result.first.has_value() && result.first->option_id == "b_open";
+}
+
+}  // namespace
+
+inline int run_harness_v011() {
+    using namespace fixture_v07;
+    using namespace options_v07;
+    using dof::Hypothesis;
+    using dof::HypothesisSet;
+    using dof::validate_set;
+    using dof::resolved_members;
+    using dof::coverage_of;
+    using dof::hypothesis_coverage;
+
+    std::vector<std::string> failures;
+
+    // --- 0. the released evidence still stands ------------------------------
+    // The released fixture's own fingerprints, asserted on the released fixture,
+    // exactly as `harness_v08` asserts them: the T1 scene is a different scene and
+    // its digests are legitimately its own.
+    DOFOrchestrator orch_rel(0.05);
+    orch_rel.measure(scene());
+    const dof::MeasurementDeclaration& rel_decl = *orch_rel.mapper_ref().last_declaration;
+    const ObservationContext& rel_ctx = *orch_rel.mapper_ref().last_observation;
+    {
+        const std::string d = rel_decl.digest();
+        check11(failures, "the v0.7 declaration digest is still reproduced",
+                d == kExpectedRulerDigest, d.substr(0, 16));
+    }
+    {
+        const std::string o = rel_ctx.observation_digest;
+        check11(failures, "the released fixture still carries the v0.7 observation digest",
+                o == kExpectedObservationDigest, o.substr(0, 16));
+    }
+    {
+        const std::string r = rel_decl.ruler_digest();
+        check11(failures,
+                "the v0.7 ruler digest is still reproduced (the exclusion rule did not move)",
+                r == kExpectedRulerDigestV011, r.substr(0, 16));
+    }
+
+    DOFOrchestrator orch_obs(0.05);
+    const SystemStateMatrix state = orch_obs.measure(t1_scene());
+    const ObservationContext& ctx = *orch_obs.mapper_ref().last_observation;
+    const dof::MeasurementDeclaration& decl = *orch_obs.mapper_ref().last_declaration;
+    const DOFCalculusCore& core = orch_obs.core_ref();
+
+    std::cout << "=== 0. §3.4.2/§4.10: one ruler, two readings ===\n";
+
+    // The second reading is a **transformation of one observed state**, mapped
+    // through its own orchestrator so that its declaration, its ruler and its graph
+    // come from the same named procedures as the observed one.
+    DOFOrchestrator orch_alt(0.05);
+    const SystemStateMatrix state_b =
+        dof::v011_reconcile(orch_alt.measure(dof::v011_scaled_scene(t1_scene(), 1.25)));
+    const ObservationContext& ctx_b = *orch_alt.mapper_ref().last_observation;
+    const dof::MeasurementDeclaration& decl_b = *orch_alt.mapper_ref().last_declaration;
+
+    check11(failures, "the ruler is shared across the release: v0.11 ruler == v0.7 ruler",
+            decl.ruler_digest() == rel_decl.ruler_digest(),
+            decl.ruler_digest().substr(0, 16) + " vs " + rel_decl.ruler_digest().substr(0, 16));
+    check11(failures, "two readings of one cycle share the ruler digest byte for byte",
+            decl.ruler_digest() == decl_b.ruler_digest(),
+            decl.ruler_digest().substr(0, 16) + " vs " + decl_b.ruler_digest().substr(0, 16));
+    check11(failures, "…while their full declaration digests differ",
+            decl.digest() != decl_b.digest(),
+            decl.digest().substr(0, 16) + " vs " + decl_b.digest().substr(0, 16));
+    check11(failures, "…and the observation digest is **shared** — §3.5's `G` is not branched",
+            ctx.observation_digest == ctx_b.observation_digest,
+            ctx.observation_digest.substr(0, 16) + " vs " + ctx_b.observation_digest.substr(0, 16));
+
+    const Hypothesis h_obs = hyp(kObservedHypothesisId, true, state, "the observed reading");
+    const Hypothesis h_alt =
+        hyp("h_alt", true, state_b, "declared Variety counter scaled by 1.25");
+    std::cout << "\n";
+
+    // --- 1. §3.6: the hypothesis set and its validation rules ---------------
+    std::cout << "=== 1. §3.6: five validation rules, each on its own defect ===\n";
+    const std::vector<std::string> well_formed = validate_set(state, {h_obs, h_alt});
+    {
+        std::string detail;
+        for (const auto& e : well_formed) detail += e + " ";
+        check11(failures, "a well-formed two-member set is admissible", well_formed.empty(),
+                detail);
+    }
+
+    check11(failures, "duplicate ids are refused",
+            has_substring(validate_set(state, {h_obs, hyp(kObservedHypothesisId, true,
+                                                          state_b, "")}),
+                          "ids are not unique"));
+
+    const std::string entity = dof::v011_entity(state, 0);
+    const SystemStateMatrix omitted = dof::v011_without_entity(state_b, entity);
+    check11(failures, "a reading that omits an entity of S is refused",
+            has_substring(validate_set(state, {h_obs, hyp("h_omit", true, omitted, "")}),
+                          "omits entities"));
+
+    const SystemStateMatrix extra = dof::v011_with_extra_entity(state_b);
+    check11(failures, "a reading that declares an entity not in S is refused",
+            has_substring(validate_set(state, {h_obs, hyp("h_extra", true, extra, "")}),
+                          "declares entities not in the observed state"));
+
+    const SystemStateMatrix broken = dof::v011_break_lens_product(state_b, entity);
+    check11(failures, "a stated DoF that its own counters do not produce is refused",
+            has_substring(validate_set(state, {h_obs, hyp("h_broken", true, broken, "")}),
+                          "differs from the product of its own lens values"));
+
+    const SystemStateMatrix moved = dof::v011_move_collapse_label(state_b, entity);
+    check11(failures, "moving the collapse-source label between readings is refused",
+            has_substring(validate_set(state, {h_obs, hyp("h_moved", true, moved, "")}),
+                          "is_collapse_source differs"));
+
+    const SystemStateMatrix durations = dof::v011_change_durations(state_b);
+    check11(failures, "measurement durations are ruler-level and may not vary per reading",
+            has_substring(validate_set(state, {h_obs, hyp("h_dur", true, durations, "")}),
+                          "durations are ruler-level"));
+
+    check11(failures, "the observed state must be present in H",
+            has_substring(validate_set(state, {h_alt}), "the observed state is absent"));
+
+    check11(failures, "a set that marks every reading implausible is refused",
+            has_substring(validate_set(state,
+                                       {hyp(kObservedHypothesisId, false, state, ""),
+                                        hyp("h_alt", false, state_b, "")}),
+                          "H_plausible would be empty"));
+    std::cout << "\n";
+
+    // --- 2. §3.6/§4.10.6: absence and emptiness -----------------------------
+    std::cout << "=== 2. §3.6: absence and emptiness are the observed singleton ===\n";
+    const std::vector<Hypothesis> singleton = resolved_members(state, nullptr);
+    check11(failures, "an absent set resolves to exactly one member", singleton.size() == 1);
+    check11(failures, "…whose id is the observed one",
+            !singleton.empty() && singleton[0].id == kObservedHypothesisId);
+    check11(failures, "…and which is plausible", !singleton.empty() && singleton[0].plausible);
+    HypothesisSet empty_set;
+    check11(failures, "an empty set resolves the same way",
+            resolved_members(state, &empty_set).size() == 1);
+    check11(failures, "an absent coverage claim reads as `partial`, never `complete`",
+            coverage_of(nullptr) == "partial" && coverage_of(&empty_set) == "partial");
+    HypothesisSet complete_set;
+    complete_set.coverage = "complete";
+    check11(failures, "a declared coverage claim is reported as declared",
+            hypothesis_coverage(&complete_set) == "complete");
+    std::cout << "\n";
+
+    // --- 3. §3.3/§4.4: the two forms, and no mixing ------------------------
+    std::cout << "=== 3. §3.3/§4.4: the two forms of an option ===\n";
+    const ActionOption flat = dof::v011_option("flat_opt", entity, 0.01);
+    check11(failures, "a single map of deltas is the flat form",
+            projection_form(flat) == "flat");
+    check11(failures, "an empty closure list is the flat form",
+            closure_form(flat) == "flat");
+    check11(failures, "a flat option is well formed", forms_consistent(flat).empty());
+
+    ActionOption per_h = dof::v011_option("per_h_opt", entity, 0.01);
+    per_h.projected_dof_delta.clear();
+    per_h.projected_by_hypothesis = {
+        {kObservedHypothesisId, {{entity, 0.01}}},
+        {"h_alt", {{entity, 0.02}}},
+    };
+    check11(failures, "a map keyed by reading is the per-hypothesis form",
+            projection_form(per_h) == "per_hypothesis");
+    check11(failures, "…and the delta read under a reading is that reading's",
+            delta_for(per_h, kObservedHypothesisId, entity) == 0.01 &&
+                delta_for(per_h, "h_alt", entity) == 0.02);
+    check11(failures, "…with entities unlisted for a reading taking 0.0",
+            delta_for(per_h, "h_alt", "nobody") == 0.0);
+
+    ActionOption mixed = dof::v011_option("mixed_opt", entity, 0.01);
+    mixed.projected_by_hypothesis = {{kObservedHypothesisId, {{entity, 0.02}}}};
+    check11(failures, "mixing both forms in the projection is `invalid`",
+            projection_form(mixed) == "invalid");
+    check11(failures, "…and the option says so", !forms_consistent(mixed).empty());
+
+    ActionOption mixed_closure = dof::v011_option("mixed_closed_opt", entity, 0.01);
+    dof::ClosedRef radio;
+    radio.kind = "mean";
+    radio.id = "radio";
+    mixed_closure.closed = {radio};
+    mixed_closure.closed_by_hypothesis = {{kObservedHypothesisId, {radio}}};
+    check11(failures, "mixing both forms in the closure list is `invalid`",
+            closure_form(mixed_closure) == "invalid");
+    check11(failures, "…and the option says so too",
+            !forms_consistent(mixed_closure).empty());
+    std::cout << "\n";
+
+    // --- 4. §4.8b: the temporal condition ----------------------------------
+    std::cout << "=== 4. §4.8b: the temporal condition, as a condition ===\n";
+    const std::optional<double> tau_opt = tau_of(state);
+    check11(failures, "the released fixture carries a measured τ", tau_opt.has_value());
+    const double tau = tau_opt.value_or(0.0);
+
+    const ActionOption short_act = dof::v011_option("short_act", entity, 0.01);
+    check11(failures, "an act within τ is viable", dof::viability(state, short_act).viable);
+
+    ActionOption long_act = dof::v011_option("long_act", entity, 0.01);
+    long_act.estimated_duration_mks = tau * 2.0;
+    check11(failures, "an act that cannot complete within τ is not viable",
+            !dof::viability(state, long_act).viable);
+
+    const SystemStateMatrix no_tau = dof::v011_unknown_tau(state);
+    check11(failures, "an unknown τ is not a licence for an ordinary act",
+            !dof::viability(no_tau, short_act).viable);
+    check11(failures, "…and the reason names the missing measurement (§4.8b)",
+            dof::viability(no_tau, short_act).reason.find("unmeasured") != std::string::npos);
+
+    ActionOption measure_tau = dof::v011_option("measure_tau", entity, 0.01);
+    measure_tau.discovers = {"tau"};
+    measure_tau.estimated_duration_mks = 1000.0;
+    measure_tau.projected_tau_value = tau + 1.0e6;
+    check11(failures, "a τ measurement is viable under an unknown τ when it can complete",
+            dof::viability(no_tau, measure_tau).viable);
+    check11(failures, "…and viable under a measured τ as well",
+            dof::viability(state, measure_tau).viable);
+
+    ActionOption dead_measure = dof::v011_option("dead_measure", entity, 0.01);
+    dead_measure.discovers = {"tau"};
+    dead_measure.estimated_duration_mks = 1000.0;
+    dead_measure.projected_tau_value = -1.0;
+    check11(failures, "a τ measurement whose own declared result is dead is not viable",
+            !dof::viability(state, dead_measure).viable);
+    check11(failures,
+            "…and the retired disjunction `τ = null` OR `τ >= t_m` would have admitted it",
+            !dof::viability(no_tau, dead_measure).viable);
+
+    const std::optional<double> derived = dof::derived_tau_delta(state, measure_tau);
+    const double expected =
+        measure_tau.projected_tau_value.value_or(0.0) - (tau - measure_tau.estimated_duration_mks);
+    check11(failures, "`projected_tau_delta` is derived for a τ measurement",
+            derived.has_value() && std::fabs(*derived - expected) < 1e-6,
+            (derived ? num11(*derived) : std::string("null")) + " vs " + num11(expected));
+    check11(failures, "…and is null, not zero, when τ is unknown",
+            !dof::derived_tau_delta(no_tau, measure_tau).has_value());
+    std::cout << "\n";
+
+    // --- 5. §4.10: the robust selection ------------------------------------
+    std::cout << "=== 5. §4.10: robust selection over the declared readings ===\n";
+    // The arithmetic needs room: `coerce_dof` clamps an entity's DoF into [0,1] and
+    // the released fixture sits at the top of that interval, where a positive
+    // projection cannot move anything. The observed reading of this section is the
+    // same fixture with one entity's declared Variety counter scaled down — still a
+    // state §4.1 accepts, since its stated DoF is the product of its own counters.
+    const SystemStateMatrix observed = dof::v011_set_entity_dof(state, entity, 0.25);
+    const SystemStateMatrix other = dof::v011_set_entity_dof(state_b, entity, 0.30);
+    const std::vector<Hypothesis> members = {
+        hyp(kObservedHypothesisId, true, observed, ""),
+        hyp("h_alt", true, other, ""),
+    };
+    const ActionOption strong = dof::v011_option("strong", entity, 0.5);
+    const ActionOption weak = dof::v011_option("weak", entity, 0.1);
+    const std::vector<ActionOption> candidates = {strong, weak};
+
+    {
+        const std::vector<std::string> consistency = validate_set(observed, members);
+        std::string detail;
+        for (const auto& e : consistency) detail += e + " ";
+        check11(failures, "the readings of this section are §4.1-consistent",
+                consistency.empty(), detail);
+    }
+
+    const auto per_h_all = dof::conditional_vectors(core, members, candidates, ctx);
+    check11(failures, "the conditional vectors are produced per option and per reading",
+            per_h_all.size() == 2 && per_h_of(per_h_all, "strong").size() == 2);
+    const double strong_obs = vector_of(per_h_of(per_h_all, "strong"), kObservedHypothesisId)
+                                  .net_delta;
+    const double strong_alt = vector_of(per_h_of(per_h_all, "strong"), "h_alt").net_delta;
+    check11(failures, "…and they are not all alike (the readings really differ)",
+            strong_obs != strong_alt, num11(strong_obs) + " vs " + num11(strong_alt));
+
+    const double least_strong = dof::least_favourable(per_h_of(per_h_all, "strong"), members);
+    const double greatest_strong = std::max(strong_obs, strong_alt);
+    check11(failures, "the ordering key is the least-favourable delta, not the greatest",
+            least_strong == std::min(strong_obs, strong_alt) && least_strong < greatest_strong,
+            "min=" + num11(least_strong) + " max=" + num11(greatest_strong));
+
+    // A reading under which one candidate crosses into the zero: the entity sits
+    // just above it, and the option's negative projection drives it in. Under the
+    // observed reading the same option leaves the entity positive.
+    const SystemStateMatrix lows = dof::v011_set_entity_dof(state_b, entity, 0.02);
+    const std::vector<Hypothesis> bar_members = {
+        h_obs,
+        hyp("h_bar", true, lows, "one entity sits just above the zero"),
+    };
+    const ActionOption sink = dof::v011_option("sink", entity, -0.05);
+    const auto per_h_bar = dof::conditional_vectors(core, bar_members, {sink}, ctx);
+    const std::map<std::string, ConditionalVector>& sink_vectors = per_h_of(per_h_bar, "sink");
+    check11(failures,
+            "an option that crosses into the zero under one reading is charged there (D1 > 0)",
+            vector_of(sink_vectors, "h_bar").d1 > 0,
+            "d1=" + std::to_string(vector_of(sink_vectors, "h_bar").d1) +
+                " under the bar, d1=" +
+                std::to_string(vector_of(sink_vectors, kObservedHypothesisId).d1) +
+                " under the observed reading");
+    check11(failures, "…and is not charged under the observed reading",
+            vector_of(sink_vectors, kObservedHypothesisId).d1 == 0);
+    check11(failures, "a candidate barred under one plausible reading is not robustly admissible",
+            !dof::robust_admissible(sink_vectors, bar_members));
+
+    {
+        const std::map<std::string, bool> split = dof::admissible_under(sink_vectors, bar_members);
+        std::string detail;
+        for (const auto& kv : split) {
+            detail += kv.first + "=" + (kv.second ? "1 " : "0 ");
+        }
+        auto io = split.find(kObservedHypothesisId);
+        auto ia = split.find("h_bar");
+        check11(failures, "the per-reading admissibility is reported per reading",
+                io != split.end() && ia != split.end() && io->second != ia->second, detail);
+    }
+    check11(failures, "and the split is surfaced as a conflict (§4.10.5)",
+            dof::hypothesis_conflict(per_h_bar, bar_members, {}));
+    check11(failures, "a conflict is not reported for a single-member set",
+            !dof::hypothesis_conflict(per_h_bar, {h_obs}, {"sink"}));
+
+    const auto chosen = dof::select_conditional(core, observed, candidates, members, ctx);
+    check11(failures, "among robustly admissible candidates the greatest robust delta wins",
+            chosen.first.has_value() && chosen.first->option_id == "strong",
+            chosen.first ? chosen.first->option_id : std::string("none"));
+    check11(failures, "the payload lists the robust candidates",
+            chosen.second.robust_candidates.size() == 2,
+            std::to_string(chosen.second.robust_candidates.size()));
+    check11(failures, "the payload lists the robust key of every option",
+            chosen.second.net_delta_robust.size() == 2);
+
+    // §4.10.4: no fallback to admissible support.
+    const auto chosen_none = dof::select_conditional(core, observed, {sink}, bar_members, ctx);
+    check11(failures, "an empty robust candidate set yields no action at all",
+            !chosen_none.first.has_value(),
+            chosen_none.first ? chosen_none.first->option_id : std::string("none"));
+    check11(failures, "…and the payload still reports what it refused",
+            chosen_none.second.robust_candidates.empty() &&
+                chosen_none.second.hypothesis_conflict);
+
+    // §4.5 key 3 under its robust reading: an option that closes nothing under the
+    // observed reading but closes something under another reading must NOT collect
+    // the preference — key 2 has already charged that closure at its worst.
+    ActionOption closer = dof::v011_option("closer", entity, 0.02);
+    closer.projected_dof_delta.clear();
+    closer.projected_by_hypothesis = {
+        {kObservedHypothesisId, {{entity, 0.02}}},
+        {"h_alt", {{entity, 0.02}}},
+    };
+    closer.closed_by_hypothesis = {
+        {kObservedHypothesisId, {}},
+        {"h_alt", {radio}},
+    };
+    check11(failures, "a per-hypothesis closure is read per reading",
+            is_reversible_for(closer, kObservedHypothesisId) &&
+                !is_reversible_for(closer, "h_alt"));
+    check11(failures, "…so the observed reading alone would call it reversible",
+            is_reversible_for(closer, kObservedHypothesisId));
+    check11(failures, "…but the robust reading does not (§4.5 key 3, §4.10.2)",
+            !dof::robust_reversible(closer, members));
+    check11(failures, "…and the decision prefers the one that closes nothing under every reading",
+            selects_reversible(core, observed, ctx, members));
+    check11(failures, "with no hypothesis set the robust reading is the flat one (§4.5)",
+            dof::robust_reversible(closer, {h_obs}));
+
+    // §4.4 guards range over every reading's closure list.
+    ActionOption guarded = dof::v011_option("guarded", entity, 0.01);
+    guarded.act_id = "act_x";
+    dof::ClosedRef self_act;
+    self_act.kind = "act";
+    self_act.id = "act_x";
+    guarded.closed_by_hypothesis = {
+        {kObservedHypothesisId, {}},
+        {"h_alt", {self_act}},
+    };
+    check11(failures, "the self-closure guard (§4.4 guard 1) catches a per-hypothesis self-closure",
+            !core.closure_error(guarded).empty());
+    std::cout << "\n";
+
+    return static_cast<int>(failures.size());
+}
