@@ -206,21 +206,49 @@ def u0_from_prior(prior_q: Optional[float] = None) -> float:
     return max(U_MIN, min(U_MAX, q))
 
 
-def total_budget_mks(t_m: float, t_v: float, t_a_plus: float, t_a_minus: float) -> float:
-    """`T_meas = t_m + t_v + max(t_a⁺, t_a⁻)` (§4.7) — the maximum, because the
-    branch is not known in advance and the budget must hold in both."""
-    return t_m + t_v + max(t_a_plus, t_a_minus)
+def total_budget_mks(t_m: float, t_v: float, t_a_plus: float = 0.0,
+                     t_a_minus: float = 0.0) -> float:
+    """`T_meas = t_m + t_v` (§4.7) — the measurement's **own** duration.
 
+    `v0.11` removes the `max(t_a⁺, t_a⁻)` term that `v0.9.1` carried. Bundling the
+    duration of a *subsequent* action into the measurement window made the window
+    depend on a candidate the Core has not chosen yet, which inverts the
+    separation `measurement → obtains information` / `decision → chooses action`:
+    the Core is stepwise, and the action that follows a measurement is evaluated
+    in the next cycle through its own `estimated_duration_mks`.
 
-def u_of_t(u0: float, tau_mks: float, t_meas_mks: float, t_mks: float = 0.0) -> float:
-    """Ignorance penalty `u(t) = u₀^(1 − t/t*) · ε^(t/t*)` on `t ∈ [0, t*]` (§4.7).
-
-    `t* = τ − T_meas` is the point of no return for measurement. If `t* ≤ 0` the
-    window does not exist and the numeric price is `u₀`.
+    `t_a_plus` / `t_a_minus` are kept in the signature for callers of the older
+    revision and are **deliberately ignored**; a port that adds them is
+    non-conformant (§4.7, §10(T)).
     """
+    return t_m + t_v
+
+
+def u_of_t(u0: float, tau_mks: Optional[float], t_meas_mks: float,
+           t_mks: float = 0.0) -> float:
+    """Ignorance penalty `u(t)` (§4.7), continuous at the boundary `t* = 0`.
+
+    ```text
+    u(t) = u₀                                        if τ = null
+         = ε                                         if τ ≠ null and t* ≤ 0
+         = u₀^(1 − t/t*) · ε^(t/t*)                  if τ ≠ null and t* > 0
+    ```
+
+    `t* = τ − T_meas` is the point of no return for measurement. The two branches
+    are separated deliberately: `lim_{t*→0⁺} u(t*) = ε`, so the closed window must
+    price at `ε` (≈ `ln ε = −13.8` nats) rather than at `u₀` (≈ `−0.69`). Pricing
+    it at `u₀` produced a jump of ~13 nats exactly where measurement stops being
+    possible; the `v0.9.1` wording asserted the `ε` limit while the branch
+    returned `u₀`.
+
+    An **undeclared** schedule is read as `t = 0` and therefore as `u₀`; a
+    declared `t > t*` is non-conformant input, not a value to clamp.
+    """
+    if tau_mks is None:
+        return u0
     t_star = tau_mks - t_meas_mks
     if t_star <= 0.0:
-        return u0
+        return EPSILON
     t = max(0.0, min(t_mks, t_star))
     w = t / t_star
     return (u0 ** (1.0 - w)) * (EPSILON ** w)
@@ -349,6 +377,15 @@ class MeasurementDeclaration(BaseModel):
     verdicts: Dict[str, Dict[str, object]] = {}           # entity -> {verdict, t_rec_mks, v}
     means_class: List[str] = []                           # §4.9: identifiers of M(S), canonical order
     graph_procedure: str = ""                             # §4.9: identity and version of the verdict procedure
+    # §3.4.1/§3.4.2 (v0.11): the measurement durations `t_m`, `t_v` per lens.
+    # **Ruler-level**, not hypothesis-level: §4.7 defines them as *declared
+    # durations of the measurement procedure* — sampling and verification — and
+    # says the core never infers them. A hypothesis may reinterpret what was
+    # **measured**; it may not reinterpret how long the **measuring** takes,
+    # because then `T_meas` and hence `t*` would differ between readings that
+    # claim to use one ruler, and `min_h NetDelta(o | h)` would compare numbers
+    # produced by different measuring systems.
+    measurement_durations: Dict[str, Dict[str, float]] = {}
 
     def u0(self) -> float:
         return u0_from_prior(self.u0_prior_q)
@@ -370,11 +407,61 @@ class MeasurementDeclaration(BaseModel):
             return "%.6f" % obj
         return str(obj)
 
+    def _dump(self) -> dict:
+        """The canonical dump, with §3.4.3's undeclared-procedure rule applied.
+
+        `§4.7` treats "no duration declared" as **one** condition — the
+        procedure is undeclared and the window uncomputable — so an absent
+        `measurement_durations` and an empty one MUST hash alike, and the key is
+        omitted when empty. That is also what keeps the field **additive**: a
+        state that declares no duration hashes exactly as it did before the
+        field existed, so the `v0.7`/`v0.8`/`v0.9.1` fingerprints are untouched
+        while a state that *does* declare durations hashes them (§3.4.1).
+        """
+        dump = self.model_dump()
+        if not dump.get("measurement_durations"):
+            dump.pop("measurement_durations", None)
+        return dump
+
     def canonical_text(self) -> str:
-        return json.dumps(self._canonicalize(self.model_dump()), separators=(",", ":"), ensure_ascii=False)
+        return json.dumps(self._canonicalize(self._dump()), separators=(",", ":"), ensure_ascii=False)
+
+    def ruler_canonical_text(self) -> str:
+        """§3.4.2/§3.4.3: the **ruler-level** content of the same declaration.
+
+        Everything that is identical for every hypothesis of a cycle and for
+        every option: the procedure and its version, the lens set, the units and
+        scales, the means class `M(S)`, `T_rec(X)`, the derived groups, the
+        observed rates with their numeraire, the mandate, the `u₀` prior and the
+        graph procedure identity.
+
+        Three groups of fields are **excluded**, and each for a stated reason:
+
+        * `entities` — the per-entity **lens counters**, which are precisely what
+          a hypothesis varies (§3.6);
+        * `freeze` — τ and the budgets, which are the hypothesis's own measured
+          content;
+        * `verdicts` — the §4.9 **verdict**, which consumes `DoF(X | h)` and is
+          therefore computed per hypothesis (§4.9). Its horizon `T_rec(X)` is
+          type-derived and shared, but it does not have to be *hashed* for the
+          readings to be comparable, and the declaration carries no field for it:
+          `v0.11` is additive, so the **full** `digest()` stays byte-identical to
+          the `v0.7`/`v0.8` ruler digest.
+
+        Two readings of one cycle therefore have **equal** `ruler_digest` and
+        **different** `digest`, which is what makes the `min_h` of §4.10 a
+        conformant output while a comparison of two different rulers is not.
+        """
+        dumped = self._dump()
+        for field in ("entities", "freeze", "verdicts"):
+            dumped.pop(field, None)
+        return json.dumps(self._canonicalize(dumped), separators=(",", ":"), ensure_ascii=False)
 
     def digest(self) -> str:
         return hashlib.sha256(self.canonical_text().encode("utf-8")).hexdigest()
+
+    def ruler_digest(self) -> str:
+        return hashlib.sha256(self.ruler_canonical_text().encode("utf-8")).hexdigest()
 
 
 def build_declaration(psi_id: str, lens_observations: Dict[str, LensObservation],
@@ -390,7 +477,9 @@ def build_declaration(psi_id: str, lens_observations: Dict[str, LensObservation]
                       mandate_cap: Optional[float] = None,
                       verdicts: Optional[Dict[str, Dict[str, object]]] = None,
                       means_class: Optional[Sequence[str]] = None,
-                      graph_procedure: str = "") -> MeasurementDeclaration:
+                      graph_procedure: str = "",
+                      measurement_durations: Optional[Dict[str, Dict[str, float]]] = None
+                      ) -> MeasurementDeclaration:
     """Assemble the frozen declaration for one state (§3.4.1).
 
     The resource layer is normalized before hashing: units sorted by resource
@@ -416,6 +505,12 @@ def build_declaration(psi_id: str, lens_observations: Dict[str, LensObservation]
         verdicts={str(e): dict(v) for e, v in sorted((verdicts or {}).items())},
         means_class=sorted(str(c) for c in (means_class or [])),
         graph_procedure=str(graph_procedure),
+        # §3.4.1 (v0.11): hashed **ruler** content — a duration is a property of
+        # the measurement procedure, not of the reading that uses it.
+        measurement_durations={
+            str(lens): {str(k): float(v) for k, v in sorted(durs.items())}
+            for lens, durs in sorted((measurement_durations or {}).items())
+        },
     )
 
 

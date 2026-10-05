@@ -134,6 +134,35 @@ class GraphMapper:
         # (§3.2). A safe large value is used when none exists.
         global_ttc = min_ttc if min_ttc != float("inf") else 1e15
 
+        # §3.2b (v0.11): τ is read from the **resource map**, and the individual
+        # deadlines declared alongside it govern it. Three cases, in this order:
+        #
+        #   1. declared individual deadlines — τ is their minimum, and is `null`
+        #      when **any** active deadline is unmeasured: taking the minimum over
+        #      the measured ones alone would read an unknown timer as absent
+        #      (§10(w), §10(ao));
+        #   2. otherwise the `tau` observation of the map, which may be negative
+        #      (a passed deadline keeps its magnitude, §10(p)) or `null`;
+        #   3. otherwise the legacy entity-minimum, kept so the historical
+        #      fixtures of `v0.6`-`v0.9.1` still read as they did.
+        declared_deadlines: Dict[str, Optional[float]] = {
+            str(k): (None if v is None else float(v))
+            for k, v in (layer.get("deadlines") or {}).items()
+        }
+        tau_obs_raw = means_obs.get("tau")
+        if declared_deadlines:
+            tau_value: Optional[float] = (
+                None if any(v is None for v in declared_deadlines.values())
+                else min(v for v in declared_deadlines.values() if v is not None))
+        elif tau_obs_raw is not None:
+            raw_value = tau_obs_raw.get("value")
+            tau_value = None if raw_value is None else float(raw_value)
+        else:
+            tau_value = global_ttc
+        # §3.2b/§10(s): the deprecated mirror is clamped and is **not** τ. It is
+        # `0.0` for an unknown and for a passed deadline, and equals τ otherwise.
+        mirror_ttc = 0.0 if (tau_value is None or tau_value < 0.0) else float(tau_value)
+
         # §4.9 (v0.7): the counting horizon of the Variety procedure. A response
         # vector must be executable inside it, so the default is the cycle's own
         # τ — the observation may declare a different one, but never an implicit
@@ -188,15 +217,30 @@ class GraphMapper:
                                  "t_rec_mks": t_rec.get(eid),
                                  "v": graph.v_count(eid, means_class, counting_horizon)}
 
+        # §3.4.1/§3.4.2 (v0.11): the measurement durations are **declared ruler
+        # content**. They are read from the observation, never inferred (§4.7),
+        # and they are the same for every reading of the cycle — a hypothesis
+        # reinterprets what was measured, not how long the measuring takes.
+        durations_raw = raw_observations.get("measurement_durations") or {}
+        measurement_durations: Dict[str, Dict[str, float]] = {
+            str(lens): {str(k): float(v) for k, v in (durs or {}).items()}
+            for lens, durs in durations_raw.items()
+        }
+        measurement_schedule: Dict[str, float] = {
+            str(lens): float(t)
+            for lens, t in (raw_observations.get("measurement_schedule") or {}).items()
+        }
+
         # Pass 2: the declaration is frozen on S, so τ is known before measuring.
-        declaration = build_declaration(self.psi_id, observations, global_ttc, self.u0_prior_q,
+        declaration = build_declaration(self.psi_id, observations, tau_value, self.u0_prior_q,
                                         resources=units, groups=groups, rates=rates,
                                         mandate=mandate,
                                         numeraire=(str(numeraire) if numeraire else None),
                                         weights=weights, mandate_cap=cap,
                                         verdicts=verdicts,
                                         means_class=means_class,
-                                        graph_procedure=graph_procedure)
+                                        graph_procedure=graph_procedure,
+                                        measurement_durations=measurement_durations)
         self.last_declaration = declaration
         u0 = declaration.u0()   # at t = 0 the schedule of §4.7 gives u₀
 
@@ -233,17 +277,27 @@ class GraphMapper:
                                                             counting_horizon)
 
         return SystemStateMatrix(
-            global_time_to_collapse_mks=global_ttc,
+            global_time_to_collapse_mks=mirror_ttc,
             context_switch_cost=self.context_switch_cost,
             entities=entities,
             psi=PsiReference(id=declaration.psi_id, digest=declaration.digest()),
             resources=means_obs,
+            # §3.2b (v0.11): τ lives in the resource map — signed, and `null`
+            # when unmeasured. The `tau` entry of `means` **is** this object, so a
+            # rule that reads τ reads the map and not a field beside it.
             tau=ResourceObservation(
-                value=global_ttc,
+                value=tau_value,
                 unit="us",
                 scale=1.0,
-                source="entity_min",
+                source="resource_map",
                 last_measured_at=0.0,
                 aging_time=0.0,
             ),
+            deadlines=declared_deadlines,
+            # §3.4.1/§3.4.2 (v0.11): ruler-level declared durations and the
+            # declared measurement schedule. A hypothesis carries them because a
+            # hypothesis is a complete `SystemStateMatrix`; it MUST NOT vary
+            # them, and `validate_set` refuses a set that does (§3.6).
+            measurement_durations=measurement_durations,
+            measurement_schedule=measurement_schedule,
         )

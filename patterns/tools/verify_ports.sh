@@ -113,6 +113,38 @@ report_v091() {
     fi
 }
 
+# --- v0.11 row: the hypothesis artifact and the repaired §4.9 -----------------
+# The invariant of this release is the **ruler**, not the declaration (§10
+# evidence-criterion repair): `v0.11` redefines §4.9, and the §4.9 verdicts are
+# hashed declaration content (§3.4.1), so a fixture that exercises the repaired
+# rule MUST produce a different per-hypothesis digest. What must NOT move is
+# `psi_ruler_digest` (§3.4.2) — so this row asserts, from the harness's own
+# printed fingerprints, that the v0.11 ruler equals the v0.7 ruler computed by
+# the same exclusion rule, and that the v0.7 declaration digest is still
+# reproduced byte-for-byte.
+report_v011() {
+    local name="$1" file="$2"
+    local ok fail shared v07dig
+    ok=$(grep -c '^  OK' "$file" || true)
+    fail=$(grep -c '^  FAIL' "$file" || true)
+    shared=$(grep -c '^  OK   the ruler is shared across the release' "$file" || true)
+    v07dig=$(grep -c '^  OK   the v0.7 declaration digest is still reproduced' "$file" || true)
+    printf '%-14s checks=%-4s failed=%-3s ruler-shared=%s v0.7-digest=%s   (v0.11, hypotheses)\n' \
+        "$name" "$ok" "$fail" \
+        "$([ "$shared" -gt 0 ] && echo yes || echo NO)" \
+        "$([ "$v07dig" -gt 0 ] && echo yes || echo NO)"
+    if [ "$fail" -ne 0 ]; then
+        printf '  FAIL lines:\n'
+        grep '^  FAIL' "$file" | sed 's/^/    /'
+        status=1
+    fi
+    if [ "$ok" -eq 0 ] || [ "$shared" -eq 0 ] || [ "$v07dig" -eq 0 ]; then
+        printf '  the v0.11 run does not show the shared ruler and the reproduced v0.7 digest\n'
+        printf '  — that is a failure, not a warning\n'
+        status=1
+    fi
+}
+
 # --- v0.7 row: historical, but it must still show the SAME two digests --------
 report_v07() {
     local name="$1" file="$2"
@@ -144,6 +176,16 @@ if [ -d "$REPO/patterns/python" ]; then
     ( cd "$REPO/patterns/python" && nix-shell -p python3 -p python3Packages.pydantic \
         --run "python3 harness_v091.py" ) > "$OUT_DIR/python_v091.out" 2>&1
     report_v091 python-v091 "$OUT_DIR/python_v091.out"
+    # v0.11: the hypothesis artifact. Present in a port only once that port has
+    # been extended; a port without the harness is reported as pending rather
+    # than passed.
+    if [ -f "$REPO/patterns/python/harness_v011.py" ]; then
+        ( cd "$REPO/patterns/python" && nix-shell -p python3 -p python3Packages.pydantic \
+            --run "python3 harness_v011.py" ) > "$OUT_DIR/python_v011.out" 2>&1
+        report_v011 python-v011 "$OUT_DIR/python_v011.out"
+    else
+        printf '%-14s   (v0.11 harness absent — pending)\n' python-v011
+    fi
     ( cd "$REPO/patterns/python" && nix-shell -p python3 -p python3Packages.pydantic \
         --run "python3 smoke_test_v07.py" ) > "$OUT_DIR/python_v07.out" 2>&1
     report_v07 python-v07 "$OUT_DIR/python_v07.out"

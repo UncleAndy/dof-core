@@ -161,8 +161,16 @@ for key, ent in slow.items():
         continue
     ent["time_to_collapse_mks"] = 500.0        # τ = 500 μs < the 1000 μs fallback option
 sel_slow, rep_slow = orch.step_with_report(slow)
-check("τ < option duration → option removed, nothing selected",
-      sel_slow is None and rep_slow.removed_options == [{"option_id": "fallback_0", "gate": "viability"}])
+check("τ < option duration → option barred, and nothing is selected",
+      # `v0.11` (§10(D), §10(E)) **retires the removal mechanism**: the temporal
+      # condition of §4.8b is no longer a pipeline that deletes the candidate
+      # before evaluation, it is a condition of admissibility (`viable`), reported
+      # per option with the condition it failed. `removed_options` is kept and
+      # marked in the report, never filled. The decision is unchanged — the option
+      # still cannot be selected — but a removal is no longer how it is expressed.
+      sel_slow is None and rep_slow.removed_options == []
+      and rep_slow.options[0]["viability"]["viable"] is False
+      and rep_slow.options[0]["barring_key"] == "viable")
 check("removal is visible in the audit", rep_slow.mode == "FAST_PASS")
 check("fixture 1 runs in FAST_PASS", report.mode == "FAST_PASS", f"τ={state.global_time_to_collapse_mks}")
 

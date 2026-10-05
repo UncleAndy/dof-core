@@ -104,7 +104,12 @@ selected, _vectors = core.select_candidate(state, [O.t1_compensate()], ctx)
 check("under T1 the option loses to staying put: the system stays", selected is None)
 check("the report names the key that barred it", core.barring_key(v_comp) == "d2")
 check("staying put is a candidate with the zero vector",
-      core.baseline_vector() == {"d1": 0, "d2": 0, "d3": 0, "net_delta": 0.0,
+      # `v0.11` (§10(E), §4.10.1) makes admissibility one predicate with **two
+      # families of conditions**, so the candidate vector gains `viable` and
+      # `resources_ok`. The baseline satisfies every one of them vacuously — it
+      # is not an action — so it remains the zero vector.
+      core.baseline_vector() == {"viable": True, "resources_ok": True,
+                                 "d1": 0, "d2": 0, "d3": 0, "net_delta": 0.0,
                                  "reversible": True, "option_id": None})
 refusal = core.report(state, [O.t1_compensate()], None, "FAST_PASS",
                       declaration=decl, ctx=ctx)
@@ -131,10 +136,16 @@ print("=== 6. §4.5: a path cut is a bar, and the third key cannot separate ==="
 v_help = core.candidate_vector(state, O.t1_help(), ctx)
 v_rival = core.candidate_vector(state, O.t1_rival(), ctx)
 check("t1_help: it cuts a path without destroying anything",
-      (v_help["d1"], v_help["d2"], v_help["d3"]) == (0, 1, 0), str(v_help))
-check("t1_help: and the path it cuts is NOT the critical node's",
-      [row["entity_id"] for row in core.lost_paths(state, O.t1_help(), ctx)] == ["trainee"]
-      and core.lost_paths(state, O.t1_help(), ctx)[0]["critical"] is False)
+      # `v0.11` §4.9: the condition is `DoF(X | h) + Δ_P(X) > 0`, and the
+      # **trivial** path is a finite simple path — so cutting a path does not
+      # make a *live* entity unreachable, and `D2` no longer fires for it
+      # (§10(J), fixtures `ar` and `ad`). `D2` keeps its teeth exactly where it
+      # matters: an option that drives the entity to a **known zero** and closes
+      # its recovery — which is what `t1_rival` does, and the assertion below
+      # still holds for it.
+      (v_help["d1"], v_help["d2"], v_help["d3"]) == (0, 0, 0), str(v_help))
+check("t1_help: and no path is reported as lost",
+      [row["entity_id"] for row in core.lost_paths(state, O.t1_help(), ctx)] == [])
 check("closing the mentor's act costs it a vector and destroys nothing",
       core.collapse_charges(state, O.t1_help(), ctx) == []
       and ctx.v_after_closure("mentor", O.t1_help().closed) == 1)

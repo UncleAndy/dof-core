@@ -1,0 +1,34 @@
+repo: /home/hermes/projects/AI/DOF-CORE
+out:  /tmp/tmp.0n7haPVYX9
+ruler digest:       5126fd99641ffdc9c338d3d288fcf3cb6dcf093ca0a423f1cd265b3fcae4152a
+observation digest: f3891c6ab622325fd6668893dd9f7450d39aa2d0a7ad2849634a4f59219f6a1c
+
+python         checks=70   failed=0   ruler=yes observation=yes
+python-v091    checks=17   failed=0     (v0.9.1, budget+τ)
+python-v011    checks=70   failed=0   ruler-shared=yes v0.7-digest=yes   (v0.11, hypotheses)
+python-v07     checks=116  failed=0   ruler=yes observation=yes   (v0.7, historical)
+python-v06     checks=63   failed=5   v0.6-digest=no   (historical, not decisive)
+go             checks=36   failed=0   ruler=yes observation=yes
+go-v091        checks=15   failed=0     (v0.9.1, budget+τ)
+go-v07         checks=116  failed=0   ruler=yes observation=yes   (v0.7, historical)
+go-v06         checks=57   failed=5   v0.6-digest=no   (historical, not decisive)
+cpp            checks=36   failed=0   ruler=yes observation=yes
+cpp-v091       checks=15   failed=0     (v0.9.1, budget+τ)
+cpp-v07        checks=116  failed=0   ruler=yes observation=yes   (v0.7, historical)
+cpp-v06        checks=58   failed=4   v0.6-digest=no   (historical, not decisive)
+rust           checks=36   failed=0   ruler=yes observation=yes
+rust-o0        checks=36   failed=0   ruler=yes observation=yes
+rust-v091      checks=15   failed=0     (v0.9.1, budget+τ)
+rust-v07       checks=116  failed=0   ruler=yes observation=yes   (v0.7, historical)
+rust-v06       checks=57   failed=5   v0.6-digest=no   (historical, not decisive)
+
+harnesses that declare a frozen digest: 11 (unique values below)
+  5126fd99641ffdc9c338d3d288fcf3cb6dcf093ca0a423f1cd265b3fcae4152a
+  bed37c25fd9cb757e9ea4a861c01cd4660fd896a83cd39b7c73b8e0be7489ad4
+  f3891c6ab622325fd6668893dd9f7450d39aa2d0a7ad2849634a4f59219f6a1c
+
+harnesses declaring the v0.7/v0.8 ruler digest:       1
+harnesses declaring the v0.7/v0.8 observation digest: 1
+v0.8: all 5 runs reproduce both digests
+
+VERIFIED
