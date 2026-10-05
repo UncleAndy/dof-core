@@ -23,22 +23,50 @@ private:
     Generator generator_;
     DOFCalculusCore core_;
 
-    std::vector<ActionOption> generate(const SystemStateMatrix& state, double tau) const {
-        if (tau < fast_pass_threshold) {
+    std::vector<ActionOption> generate(const SystemStateMatrix& state,
+                                       const std::optional<double>& tau) const {
+        // §3.2b (v0.11): an unknown budget selects the cheap path. An unknown
+        // budget never licenses the expensive one — and reading the clamped mirror
+        // instead would make an unknown τ indistinguishable from a passed one.
+        if (!tau || *tau < fast_pass_threshold) {
             return generator_.safe_fallback(state, 1);
         }
         return generator_.synthesize(state, 5);
     }
 
+    // §5's reactive-circuit mode, evaluated **once** on the observed τ (§4.10): the
+    // threshold is deliberately not hypothesis-conditional, because its only
+    // consequence is the mode and the Generator runs once.
+    //
+    // An unknown budget selects `FAST_PASS`: an unknown budget never licenses the
+    // expensive path. This is the rule `tau_of`'s `null` feeds — reading the clamped
+    // mirror instead would make an unknown τ indistinguishable from a passed one.
+    std::string mode_for(const std::optional<double>& tau) const {
+        if (!tau || *tau < fast_pass_threshold) return "FAST_PASS";
+        return "DEEP_DIVERSIFICATION";
+    }
+
     // §5: keep the options that can complete before τ and record every removal
     // — a removal is a decision and must be visible (§6.2).
+    //
+    // §3.2b (v0.11): with an **unmeasured** τ the gate cannot ask "does it fit" —
+    // an unknown budget is not a licence for an action, and it is not a passed
+    // deadline either. Only a measurement of τ resolves it, so with `null` τ the
+    // gate keeps exactly the τ measurements and removes everything else.
     static std::pair<std::vector<ActionOption>, std::vector<RemovedOption>> viability_gate(
-        const std::vector<ActionOption>& options, double tau)
-    {
+        const std::vector<ActionOption>& options, const std::optional<double>& tau) {
         std::vector<ActionOption> viable;
         std::vector<RemovedOption> removed;
         for (const auto& option : options) {
-            if (option.estimated_duration_mks <= tau) {
+            if (!tau) {
+                if (option_discovers(option, "tau")) {
+                    viable.push_back(option);
+                } else {
+                    removed.push_back(RemovedOption{option.option_id, "viability"});
+                }
+                continue;
+            }
+            if (option.estimated_duration_mks <= *tau) {
                 viable.push_back(option);
             } else {
                 removed.push_back(RemovedOption{option.option_id, "viability"});
@@ -65,7 +93,9 @@ public:
     {
         SystemStateMatrix state = mapper_.poll_environment(raw);
         const ObservationContext* ctx = mapper_.last_observation ? &*mapper_.last_observation : nullptr;
-        double tau = state.global_time_to_collapse_mks;
+        // §3.2b (v0.11): τ comes from the resource map — signed, `null` when
+        // unmeasured. The deprecated mirror is never an input to a rule.
+        const std::optional<double> tau = tau_of(state);
         auto gated = viability_gate(generate(state, tau), tau);
         // v0.8 retired the structural gate of §4.5: a charged candidate is no longer
         // removed from the set — it is evaluated, reported in full and barred by the
@@ -87,8 +117,10 @@ public:
     {
         SystemStateMatrix state = mapper_.poll_environment(raw);
         const ObservationContext* ctx = mapper_.last_observation ? &*mapper_.last_observation : nullptr;
-        double tau = state.global_time_to_collapse_mks;
-        std::string mode = (tau < fast_pass_threshold) ? "FAST_PASS" : "DEEP_DIVERSIFICATION";
+        // §3.2b (v0.11): τ is read from the resource map — signed, and `null` when
+        // unmeasured. The deprecated mirror is never an input to a rule.
+        const std::optional<double> tau = tau_of(state);
+        const std::string mode = mode_for(tau);
         auto gated = viability_gate(generate(state, tau), tau);
         auto affordable = core_.apply_resource_gate(state, gated.first,
                                                     groups_ptr(), rates_ptr(),

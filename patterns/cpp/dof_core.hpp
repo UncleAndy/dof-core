@@ -106,15 +106,33 @@ struct SystemStateMatrix {
     std::map<std::string, double> measurement_schedule;
 };
 
-// §3.2b (v0.11): τ is read from the **resource map**, never from the deprecated
-// mirror. The mirror is clamped and cannot tell "unknown" from "passed" — both read
-// `0.0` — so a rule that read it would price an unmeasured budget as a deadline
-// that has just expired, and a passed one as if it had never been set.
+// §3.2b (v0.11): τ as the calculus reads it — from the **resource map**, signed.
+//
+// A `null` value is **unmeasured**, never the minimum over the measured deadlines
+// alone and never `0.0`: an unmeasured active deadline may be the most urgent one,
+// so acting on the budget the measured ones support is acting on a budget the state
+// does not establish, and writing `0.0` invents a catastrophe (§3.1, §3.2b).
+//
+// A **negative** value is a deadline that has passed, `|τ|` ago. It is a *known*
+// state and MUST NOT be clamped to `0.0` or replaced by `null`, which means
+// unmeasured only (§3.2b, §4.8b).
+//
+// The order is the reference's: the map's `tau` observation — as `resolve_tau`
+// left it in the state — then the declared deadlines, and only then the deprecated
+// mirror, which a port that predates the resource layer still writes. The mirror is
+// therefore read **only** when the state carries neither, so it can never override a
+// measurement.
 inline std::optional<double> tau_of(const SystemStateMatrix& state) {
-    auto it = state.resources.find("tau");
-    if (it != state.resources.end()) return it->second.value;
     if (state.tau) return state.tau->value;
-    return std::nullopt;
+    if (!state.deadlines.empty()) {
+        double best = std::numeric_limits<double>::infinity();
+        for (const auto& kv : state.deadlines) {
+            if (!kv.second) return std::nullopt;  // an active deadline is unmeasured
+            if (*kv.second < best) best = *kv.second;
+        }
+        return best;
+    }
+    return state.global_time_to_collapse_mks;
 }
 
 // §5's `t*` for a measurement of `t_meas_mks`: `nullopt` when τ is unmeasured — an
@@ -188,6 +206,16 @@ struct ActionOption {
     // §3.3 (v0.9.1): resources needed for gate checks.
     std::vector<std::string> requires;
 };
+
+// §3.3/§4.8b: does this option resolve `resource`? The question is asked by §4.8b
+// (a τ measurement is governed by a different rule than a lens measurement), by
+// the τ-gate of §5 (with an unknown τ only a τ measurement survives) and by the
+// viability gate — so it is stated once, where the option is defined. A second
+// copy is how the gates come to disagree about what counts as a measurement.
+inline bool option_discovers(const ActionOption& option, const std::string& resource) {
+    return std::find(option.discovers.begin(), option.discovers.end(), resource) !=
+           option.discovers.end();
+}
 
 // The observation a cycle is decided over (§3.5, §4.9).
 //
@@ -710,6 +738,13 @@ public:
         FundingPlan plan;
         plan.need = requirement(option);
         plan.total_duration_mks = option.estimated_duration_mks;
+        // §3.2b/§4.8 (v0.11): τ is read from the resource map as a **signed** value
+        // — a negative τ is a passed deadline, not a zero — and `null` means
+        // unmeasured. The deprecated `global_time_to_collapse_mks` mirror is never
+        // an input to a rule (§3.1, §4.7, §4.8b): an unknown budget licenses no
+        // spending beyond the measured balance, so no exchange is used to cover a
+        // deficit.
+        const std::optional<double> tau = tau_of(state);
         // The numeraire weights: used to choose an offer canonically and to express
         // the mandate ceiling in one unit.
         auto weight_of = [weights](const std::string& r) {
@@ -755,8 +790,11 @@ public:
                     if (amount_source > std::max(0.0, means_of(state, source) - plan.spend[source])) {
                         continue;  // the price is not payable
                     }
-                    if (plan.total_duration_mks + duration > state.global_time_to_collapse_mks) {
-                        continue;  // the exchange does not fit in τ
+                    // §3.2b/§4.8 (v0.11): the exchange's **own time** must fit in τ,
+                    // and with an unknown τ there is no budget to spend — so no
+                    // exchange is used to cover a deficit.
+                    if (!tau || plan.total_duration_mks + duration > *tau) {
+                        continue;  // does not fit in τ (or τ is unknown)
                     }
                     offers.push_back(Offer{weight_of(source) * amount_source, duration, key,
                                            source, amount_source, rate});
@@ -1064,7 +1102,11 @@ public:
                 if (it != o.projected_dof_delta.end() && it->second != 0.0) { touched = true; break; }
             }
             if (touched) continue;
-            if (state.global_time_to_collapse_mks - cheapest > 0.0) return true;
+            // §5/§3.2b (v0.11): the window is computed from τ itself — a **null** τ
+            // yields no window at all. An unknown budget is not a closed window, so
+            // it never licenses leaving a resolvable unknown unmeasured.
+            const std::optional<double> window = measurement_window(state, cheapest);
+            if (window && *window > 0.0) return true;
         }
         return false;
     }
