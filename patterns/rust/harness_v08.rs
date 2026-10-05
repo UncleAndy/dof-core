@@ -288,17 +288,23 @@ pub fn run_harness_v08() -> Vec<String> {
     println!("=== 6. §4.5: a path cut is a bar, and the third dimension cannot separate ===");
     let vec_help = vector_of(&core, &state, c, O::t1_help());
     let vec_rival = vector_of(&core, &state, c, O::t1_rival());
+    // `v0.11` §4.9: the condition is `DoF(X | h) + Δ_P(X) > 0`, and the **trivial**
+    // path is a finite simple path — so cutting a path does not make a *live* entity
+    // unreachable, and `D2` no longer fires for it (§10(J), fixtures `ar` and `ad`).
+    // `D2` keeps its teeth exactly where it matters: an option that drives the entity
+    // to a **known zero** and closes its recovery — which is what `t1_rival` does,
+    // and the assertion below still holds for it.
     check8(
         &mut failures,
         "t1_help: it cuts a path without destroying anything",
-        vec_help.d1 == 0 && vec_help.d2 == 1 && vec_help.d3 == 0,
+        vec_help.d1 == 0 && vec_help.d2 == 0 && vec_help.d3 == 0,
         &vec8(&vec_help),
     );
     let help_lost = core.lost_paths(&state, &O::t1_help(), c);
     check8(
         &mut failures,
-        "t1_help: and the path it cuts is NOT the critical node's",
-        help_lost.len() == 1 && help_lost[0].entity_id == "trainee" && !help_lost[0].critical,
+        "t1_help: and no path is reported as lost",
+        help_lost.is_empty(),
         &help_lost.len().to_string(),
     );
     check8(

@@ -38,7 +38,9 @@ pub struct EntityNode {
     pub id: String,
     /// "complete" | "partial"
     pub observation: String,
-    /// Mirrored from the state; the verdict does not read it.
+    /// Mirrored from the state. Since `v0.11` §4.9 the verdict **does** read it —
+    /// as `DoF(X | h)` under the reading being evaluated — so a live entity is
+    /// `reachable` through the trivial path without any act.
     pub current_dof: f64,
 }
 
@@ -147,6 +149,15 @@ pub struct Verdict {
     pub reason: String,
 }
 
+/// A candidate path of §4.9: the edge-id sequence, its total duration and its
+/// accumulated effect on the entity whose recoverability is being decided.
+#[derive(Clone, Debug, Default)]
+pub struct ReachPath {
+    pub ids: Vec<String>,
+    pub duration: f64,
+    pub delta: f64,
+}
+
 /// ----------------------------------------------------------------- graph
 #[derive(Clone, Debug, Default)]
 pub struct WorldGraph {
@@ -154,11 +165,91 @@ pub struct WorldGraph {
     pub means: Vec<String>,
     pub acts: Vec<ActEdge>,
     pub exchanges: Vec<ExchangeEdge>,
+    /// §4.9 (v0.11): the enumeration's own bookkeeping. `Cell` rather than a plain
+    /// field because §4.9's verdict is asked through `&self` — the graph is reached
+    /// through `ObservationContext`, which is shared — while the search must still
+    /// record whether it was cut short. A plain `bool` would force `&mut` through
+    /// every caller of `verdict` for a flag that is written in exactly one place.
+    pub enumeration_incomplete: std::cell::Cell<bool>,
+    pub enumerated: std::cell::Cell<usize>,
+    /// `None` means "no implementation-imposed bound": the search is exhaustive.
+    pub enumeration_safety_limit: std::cell::Cell<Option<usize>>,
 }
 
 /// A candidate path: the edge-id sequence, the product of its quotes and its total
 /// duration.
 type PathCand = (Vec<String>, f64, f64);
+
+/// The §4.9 enumeration, as a recursion over simple paths.
+///
+/// Kept as its own struct rather than a nested closure so that the accumulator —
+/// the explored-node count and the completeness flag — is written in one place and
+/// handed back to the graph exactly once, at the end of the search.
+struct PathWalk<'a> {
+    by_source: &'a BTreeMap<String, Vec<ActEdge>>,
+    entity_id: &'a str,
+    horizon: f64,
+    safety_limit: Option<usize>,
+    results: Vec<ReachPath>,
+    enumerated: usize,
+    incomplete: bool,
+}
+
+impl<'a> PathWalk<'a> {
+    fn walk(
+        &mut self,
+        node: &str,
+        produced: &BTreeSet<String>,
+        seen_edges: &BTreeSet<String>,
+        ids: &Vec<String>,
+        duration: f64,
+        delta: f64,
+    ) {
+        // Record every prefix: a path need not be maximal, and a shorter prefix may
+        // be the one that lifts the entity off a known zero.
+        self.results.push(ReachPath {
+            ids: ids.clone(),
+            duration,
+            delta,
+        });
+        self.enumerated += 1;
+        if let Some(limit) = self.safety_limit {
+            if self.enumerated > limit {
+                self.incomplete = true;
+                return;
+            }
+        }
+        let outgoing = match self.by_source.get(node) {
+            Some(v) => v.clone(),
+            None => return,
+        };
+        for a in outgoing.iter() {
+            if seen_edges.contains(&a.id) {
+                continue; // no edge twice
+            }
+            if produced.contains(&a.target) {
+                continue; // no node twice
+            }
+            if duration + a.duration_mks > self.horizon {
+                continue; // Σ duration ≤ T_rec(X)
+            }
+            let mut next_produced = produced.clone();
+            next_produced.insert(a.target.clone());
+            let mut next_edges = seen_edges.clone();
+            next_edges.insert(a.id.clone());
+            let mut next_ids = ids.clone();
+            next_ids.push(a.id.clone());
+            self.walk(
+                &a.target,
+                &next_produced,
+                &next_edges,
+                &next_ids,
+                duration + a.duration_mks,
+                delta + a.effect.get(self.entity_id).copied().unwrap_or(0.0),
+            );
+        }
+    }
+}
 
 impl WorldGraph {
     pub fn means_set(&self) -> BTreeSet<String> {
@@ -519,6 +610,121 @@ impl WorldGraph {
         out
     }
 
+    /// §4.9 (v0.11): the **structurally admissible** acts, in canonical order.
+    ///
+    /// Structurally admissible means `category ∈ M(S)`, every `requires` mean
+    /// declared, and `duration_mks <= T_rec(X)` — a *structural* property of the
+    /// graph and the entity type. It is deliberately NOT the option predicate
+    /// `admissible(o)` of §4.5: running that over a path's acts would let the τ and
+    /// the resource map of one reading leak into a verdict §4.9 wants independent
+    /// of the option set.
+    pub fn path_edges(&self, categories: &[String], horizon_mks: Option<f64>) -> Vec<ActEdge> {
+        let mut out = self.admissible_acts(categories, horizon_mks);
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    /// §4.9: every finite **simple directed path** of structurally admissible acts.
+    ///
+    /// A path is a chain of acts joined by `target → source` (an act's outcome is
+    /// what the next act starts from), with no node and no edge repeated — a
+    /// *simple* path, never an arbitrary walk: a zero-duration cycle with a positive
+    /// effect would otherwise pump `Δ_P(X)` without spending time, and
+    /// `duration(P) = 0` would satisfy every horizon.
+    ///
+    /// The enumeration is exhaustive over the finite simple paths and carries no
+    /// edge bound. §4.9's condition is an existential over finite simple directed
+    /// paths and states no length limit, so an implementation that silently stopped
+    /// at a fixed depth could report `proven_unreachable` for an entity a longer
+    /// path restores — a verdict §4.2 turns into an exclusion. A `safety_limit`,
+    /// when an implementation sets one, bounds the number of **explored nodes** for
+    /// resource protection only; an enumeration that hits it is marked incomplete
+    /// and the verdict then reads `undetermined`, never a proof of unreachability.
+    /// The depth is bounded anyway by simplicity (`|P| <= |V(G)| - 1`) and by the
+    /// horizon.
+    ///
+    /// Results are returned in canonical order — greater `Δ_P` first, then fewer
+    /// edges, then the lexicographically smallest identifier sequence — so two
+    /// conformant implementations report the same witness.
+    pub fn reachability_paths(
+        &self,
+        entity_id: &str,
+        categories: &[String],
+        horizon_mks: Option<f64>,
+        safety_limit: Option<usize>,
+    ) -> Vec<ReachPath> {
+        self.enumeration_incomplete.set(false);
+        self.enumerated.set(0);
+        let horizon = match horizon_mks {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        if categories.is_empty() {
+            return Vec::new();
+        }
+        let edges = self.path_edges(categories, horizon_mks);
+        let mut by_source: BTreeMap<String, Vec<ActEdge>> = BTreeMap::new();
+        let mut starts: BTreeSet<String> = BTreeSet::new();
+        for a in edges.iter() {
+            by_source
+                .entry(a.source.clone())
+                .or_insert_with(Vec::new)
+                .push(a.clone());
+            starts.insert(a.source.clone());
+        }
+        let mut walk = PathWalk {
+            by_source: &by_source,
+            entity_id,
+            horizon,
+            safety_limit,
+            results: Vec::new(),
+            enumerated: 0,
+            incomplete: false,
+        };
+        for s in starts.iter() {
+            // No NODE twice, the origin included. `produced` is seeded with the
+            // start vertex at every launch, so a path can neither return to its
+            // origin (`A -> B -> A`) nor act on itself (`A -> A`): both repeat a
+            // vertex and are therefore not simple paths. Without the seed a
+            // zero-duration cycle with a positive effect would satisfy
+            // `duration(P) = 0 <= T_rec` and pump `Δ_P(X)` for free, and the
+            // verdict would report `reachable` where no simple path exists.
+            let mut produced: BTreeSet<String> = BTreeSet::new();
+            produced.insert(s.clone());
+            walk.walk(s, &produced, &BTreeSet::new(), &Vec::new(), 0.0, 0.0);
+        }
+        self.enumerated.set(walk.enumerated);
+        self.enumeration_incomplete.set(walk.incomplete);
+        let mut out: Vec<ReachPath> = walk
+            .results
+            .into_iter()
+            .filter(|p| !p.ids.is_empty())
+            .collect();
+        out.sort_by(|a, b| {
+            let (qa, qb) = (q6(a.delta), q6(b.delta));
+            if qa != qb {
+                return qb.partial_cmp(&qa).unwrap_or(std::cmp::Ordering::Equal);
+            }
+            if a.ids.len() != b.ids.len() {
+                return a.ids.len().cmp(&b.ids.len());
+            }
+            a.ids.join("\u{0}").cmp(&b.ids.join("\u{0}"))
+        });
+        out
+    }
+
+    /// Whether the last `reachability_paths` call finished. False means the
+    /// implementation's own safety limit cut the search short, so the absence of a
+    /// raising path is NOT a proof of unreachability.
+    pub fn enumeration_complete(&self) -> bool {
+        !self.enumeration_incomplete.get()
+    }
+
+    /// Sets this implementation's own protection bound for the path search.
+    pub fn set_enumeration_safety_limit(&self, limit: Option<usize>) {
+        self.enumeration_safety_limit.set(limit);
+    }
+
     /// The entity's RESPONSE VECTORS (§4.6): admissible acts THIS entity can
     /// perform. Recoverability is a different question — there the pool is every
     /// admissible act whose effect raises the entity's DoF, whoever performs it,
@@ -581,6 +787,32 @@ impl WorldGraph {
 
     /// -------------------------------------------------- verdicts (§4.9)
     pub fn verdict(&self, entity_id: &str, categories: &[String], horizon_mks: Option<f64>) -> Verdict {
+        self.verdict_with_dof(entity_id, categories, horizon_mks, None)
+    }
+
+    /// §4.9's rule, stated once.
+    ///
+    /// The condition is `DoF(X | h) + Δ_P(X) > 0` over a finite **simple** path of
+    /// structurally admissible acts whose total duration fits `T_rec(X)`. For an
+    /// entity at a known zero that reduces to `Δ_P(X) > 0`; for one already positive
+    /// it is satisfied by the **trivial** path (`P` a single vertex, `Δ_P = 0`,
+    /// duration 0), so a live entity is `reachable` without any path search —
+    /// reading the rule as requiring a raising path in every case would make a live
+    /// entity unrecoverable by construction.
+    ///
+    /// `proven_unreachable` is a claim of **completeness** — §4.2 turns it into an
+    /// exclusion — so it is returned only when the enumeration actually finished.
+    ///
+    /// `dof_before` is `DoF(X | h)` under the reading being evaluated (§4.10). It is
+    /// supplied by the caller because the verdict is asked under a *reading*, while
+    /// the structural inputs — `G`, the paths, `M(S)`, `T_rec(X)` — are shared.
+    pub fn verdict_with_dof(
+        &self,
+        entity_id: &str,
+        categories: &[String],
+        horizon_mks: Option<f64>,
+        dof_before: Option<f64>,
+    ) -> Verdict {
         let mut v = Verdict {
             entity_id: entity_id.to_string(),
             verdict: "undetermined".to_string(),
@@ -607,23 +839,43 @@ impl WorldGraph {
             v.reason = "recovery horizon T_rec is not declared".to_string();
             return v;
         }
-        // The recoverability pool is NOT the entity's own repertoire.
+        let base = dof_before.unwrap_or(node.current_dof);
+        // The recoverability pool is NOT the entity's own repertoire: anyone's
+        // admissible act may raise X's DoF. V counts what X itself can do.
         let pool = self.admissible_acts(categories, horizon_mks);
-        let mut raising: Vec<String> = pool
-            .iter()
-            .filter(|a| a.effect.get(entity_id).copied().unwrap_or(0.0) > 0.0)
-            .map(|a| a.id.clone())
-            .collect();
-        raising.sort();
         v.admissible_seen = pool.len();
-        if !raising.is_empty() {
+        if base > 0.0 {
             v.verdict = "reachable".to_string();
-            v.witness = raising;
-            v.reason = "an admissible act raises DoF within T_rec".to_string();
-        } else {
-            v.verdict = "proven_unreachable".to_string();
-            v.reason = "complete observation, no admissible act raises DoF".to_string();
+            v.reason =
+                "DoF(X | h) > 0: the trivial path satisfies the condition (§4.9)".to_string();
+            return v;
         }
+        let paths = self.reachability_paths(
+            entity_id,
+            categories,
+            horizon_mks,
+            self.enumeration_safety_limit.get(),
+        );
+        if !self.enumeration_complete() {
+            v.verdict = "undetermined".to_string();
+            v.reason = "the path search was stopped at the implementation's safety limit, so \
+                        absence of a raising path is not a proof (§4.9)"
+                .to_string();
+            return v;
+        }
+        for p in paths.iter() {
+            if base + p.delta > 0.0 {
+                v.verdict = "reachable".to_string();
+                v.witness = p.ids.clone();
+                v.reason =
+                    "a structurally admissible simple path raises DoF within T_rec".to_string();
+                return v;
+            }
+        }
+        v.verdict = "proven_unreachable".to_string();
+        v.reason = "complete observation, no structurally admissible simple path raises DoF \
+                    within T_rec"
+            .to_string();
         v
     }
 
@@ -668,6 +920,11 @@ impl WorldGraph {
             means: Vec::new(),
             acts: Vec::new(),
             exchanges: self.exchanges.clone(),
+            // §4.9 (v0.11): the closure graph is a fresh search domain, so it
+            // carries the same safety limit and a fresh, empty bookkeeping state.
+            enumeration_incomplete: std::cell::Cell::new(false),
+            enumerated: std::cell::Cell::new(0),
+            enumeration_safety_limit: std::cell::Cell::new(self.enumeration_safety_limit.get()),
         };
         for m in self.means.iter() {
             if !means_off.contains(m) {

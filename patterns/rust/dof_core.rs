@@ -899,11 +899,35 @@ impl DofCalculusCore {
         let mut ids: Vec<String> = state.entities.keys().cloned().collect();
         ids.sort();
         for id in ids {
-            let before = ctx.world.verdict(&id, &ctx.means_class, ctx.horizon(&id));
+            let entity = match state.entities.get(&id) {
+                Some(e) => e,
+                None => continue,
+            };
+            // §4.9 (v0.11): both verdicts consume `DoF(X | h)` — the observed
+            // reading's DoF for the before-state, and, for the after-state, the DoF
+            // the CLOSURE leaves and **never** the option's projected DoF. D2 asks
+            // "did the closure destroy a recovery path?", not "is the entity better
+            // off after the option's promised effect?" — the latter is NetDelta.
+            // Were the projection admitted here, an option could raise the
+            // after-state DoF with its own promise and buy back the very
+            // recoverability it destroys. A `None` means the closure did not touch
+            // this entity, which then keeps its observed DoF.
+            let before = ctx.world.verdict_with_dof(
+                &id,
+                &ctx.means_class,
+                ctx.horizon(&id),
+                Some(entity.current_dof),
+            );
             if before.verdict != "reachable" {
                 continue;
             }
-            let after = closed_world.verdict(&id, &ctx.means_class, ctx.horizon(&id));
+            let after_dof = self.dof_after_closure(entity, option, ctx);
+            let after = closed_world.verdict_with_dof(
+                &id,
+                &ctx.means_class,
+                ctx.horizon(&id),
+                after_dof,
+            );
             if after.verdict == "reachable" {
                 continue;
             }
