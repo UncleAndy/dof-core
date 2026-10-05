@@ -2,6 +2,7 @@
 // Mirrors patterns/smoke_test.py: the same facts on the same fixture, plus a
 // check that the canonical declaration digest matches the other ports.
 
+mod conditional;
 mod dof_core;
 mod fixture_v07;
 mod generator;
