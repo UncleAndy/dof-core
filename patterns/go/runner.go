@@ -27,6 +27,8 @@ func main() {
 		which = os.Args[1]
 	}
 	switch which {
+	case "v011":
+		runHarnessV011()
 	case "v091":
 		runHarnessV091()
 	case "v08":

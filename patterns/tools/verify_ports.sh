@@ -199,6 +199,15 @@ if [ -d "$REPO/patterns/go" ]; then
     report_current go "$OUT_DIR/go.out"
     ( cd "$REPO/patterns/go" && nix-shell -p go --run "go run . v091" ) > "$OUT_DIR/go_v091.out" 2>&1
     report_v091 go-v091 "$OUT_DIR/go_v091.out"
+    # v0.11: the hypothesis artifact. Present in a port only once that port has
+    # been extended; a port without the harness is reported as pending rather
+    # than passed.
+    if [ -f "$REPO/patterns/go/harness_v011.go" ]; then
+        ( cd "$REPO/patterns/go" && nix-shell -p go --run "go run . v011" ) > "$OUT_DIR/go_v011.out" 2>&1
+        report_v011 go-v011 "$OUT_DIR/go_v011.out"
+    else
+        printf '%-14s   (v0.11 harness absent — pending)\n' go-v011
+    fi
     ( cd "$REPO/patterns/go" && nix-shell -p go --run "go run . v07" ) > "$OUT_DIR/go_v07.out" 2>&1
     report_v07 go-v07 "$OUT_DIR/go_v07.out"
     ( cd "$REPO/patterns/go" && nix-shell -p go --run "go run . v06" ) > "$OUT_DIR/go_v06.out" 2>&1
