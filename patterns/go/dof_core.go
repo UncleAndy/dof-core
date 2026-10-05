@@ -542,11 +542,25 @@ func (c *DOFCalculusCore) lostPaths(state *SystemStateMatrix, option *ActionOpti
 	closedWorld := ctx.World.WithClosed(option.Closed)
 	critical := c.criticalMembers(state, ctx)
 	for _, id := range sortedKeys(state.Entities) {
-		before := ctx.World.Verdict(id, ctx.MeansClass, ctx.horizon(id))
+		ent := state.Entities[id]
+		beforeDoF := ent.CurrentDoF
+		before := ctx.World.VerdictWithDoF(id, ctx.MeansClass, ctx.horizon(id), &beforeDoF)
 		if before.Verdict != "reachable" {
 			continue
 		}
-		after := closedWorld.Verdict(id, ctx.MeansClass, ctx.horizon(id))
+		// §4.5/§7 item 34: the second verdict reads the state the option LEAVES
+		// BEHIND — the counters the closure changed, with the lens values
+		// recomputed from them — and reads them **without** the option's
+		// `projected_dof_delta`. D2 asks "did the closure destroy a recovery
+		// path?", not "is the entity better off after the option's promised
+		// effect?" — the latter is NetDelta. Were the projection admitted here,
+		// an option could raise the after-state DoF with its own promise and buy
+		// back the very recoverability it destroys. That is why the base DoF of
+		// the second run is `dofAfterClosure` and never `projectedDoF`; a nil
+		// result means the closure did not touch this entity, which then keeps
+		// its observed DoF.
+		afterDoF := c.dofAfterClosure(ent, option, ctx)
+		after := closedWorld.VerdictWithDoF(id, ctx.MeansClass, ctx.horizon(id), afterDoF)
 		if after.Verdict == "reachable" {
 			continue
 		}

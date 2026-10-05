@@ -174,6 +174,22 @@ type WorldGraph struct {
 	Means     []string
 	Acts      []ActEdge
 	Exchanges []ExchangeEdge
+
+	// Per-search scratch of §4.9. `enumerationIncomplete` is the only piece the
+	// verdict reads, and it defaults to false on every fresh graph — the honest
+	// default, because a search that was never cut short proved what it claims.
+	enumerationIncomplete  bool
+	enumerated             int
+	enumerationSafetyLimit *int
+}
+
+// PathCand is one finite simple directed path of structurally admissible acts:
+// its act identifiers, its total duration and its cumulative declared effect on
+// the entity the verdict is about (§3.5, §4.9).
+type PathCand struct {
+	Ids      []string
+	Duration float64
+	Delta    float64
 }
 
 func (g *WorldGraph) meansSet() map[string]bool {
@@ -469,6 +485,145 @@ func (g *WorldGraph) AdmissibleActs(categories []string, horizonMks *float64) []
 	return out
 }
 
+// PathEdges returns the **structurally admissible** acts of §4.9, in canonical
+// order. Structurally admissible means `category ∈ M(S)`, every `requires` mean
+// declared, and `duration_mks <= T_rec(X)` — a *structural* property of the graph
+// and the entity type. It is deliberately NOT the option predicate `admissible(o)`
+// of §4.5: running that over a path's acts would let the τ and the resource map
+// of one reading leak into a verdict §4.9 wants independent of the option set.
+func (g *WorldGraph) PathEdges(categories []string, horizonMks *float64) []ActEdge {
+	out := append([]ActEdge{}, g.AdmissibleActs(categories, horizonMks)...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// ReachabilityPaths enumerates every finite **simple directed path** of
+// structurally admissible acts.
+//
+// A path is a chain of acts joined by `target → source` (an act's outcome is what
+// the next act starts from), with no node and no edge repeated — a *simple* path,
+// never an arbitrary walk: a zero-duration cycle with a positive effect would
+// otherwise pump `Δ_P(X)` without spending time, and `duration(P) = 0` would
+// satisfy every horizon (§3.5, item 45).
+//
+// The enumeration is exhaustive over the finite simple paths and carries no edge
+// bound. §4.9's condition is an existential over finite simple directed paths and
+// states no length limit, so an implementation that silently stopped at a fixed
+// depth could report `proven_unreachable` for an entity a longer path restores — a
+// verdict §4.2 turns into an exclusion. A `safetyLimit`, when an implementation
+// sets one, bounds the number of **explored nodes** for resource protection only;
+// an enumeration that hits it is marked incomplete and `Verdict` then reads
+// `undetermined`, never a proof of unreachability. The depth is bounded anyway by
+// simplicity (`|P| <= |V(G)| - 1`) and by the horizon.
+//
+// Results are returned in canonical order — greater `Δ_P` first, then fewer edges,
+// then the lexicographically smallest identifier sequence — so two conformant
+// implementations report the same witness.
+func (g *WorldGraph) ReachabilityPaths(entityID string, categories []string,
+	horizonMks *float64, safetyLimit *int) []PathCand {
+	g.enumerationIncomplete = false
+	g.enumerated = 0
+	if len(categories) == 0 || horizonMks == nil {
+		return []PathCand{}
+	}
+	edges := g.PathEdges(categories, horizonMks)
+	bySource := map[string][]ActEdge{}
+	for _, a := range edges {
+		bySource[a.Source] = append(bySource[a.Source], a)
+	}
+	results := []PathCand{}
+	var walk func(node string, produced, seenEdges map[string]bool,
+		ids []string, duration, delta float64)
+	walk = func(node string, produced, seenEdges map[string]bool,
+		ids []string, duration, delta float64) {
+		// Record every prefix: a path need not be maximal, and a shorter prefix
+		// may be the one that lifts the entity off a known zero.
+		results = append(results, PathCand{Ids: append([]string{}, ids...),
+			Duration: duration, Delta: delta})
+		g.enumerated++
+		if safetyLimit != nil && g.enumerated > *safetyLimit {
+			g.enumerationIncomplete = true
+			return
+		}
+		for _, a := range bySource[node] {
+			if seenEdges[a.ID] {
+				continue // no edge twice
+			}
+			// No NODE twice, the origin included. `produced` is seeded with the
+			// start vertex at every launch, so a path can neither return to its
+			// origin (`A -> B -> A`) nor act on itself (`A -> A`): both repeat a
+			// vertex and are therefore not simple paths. Without the seed a
+			// zero-duration cycle with a positive effect would satisfy
+			// `duration(P) = 0 <= T_rec` and pump `Δ_P(X)` for free, and the
+			// verdict would report `reachable` where no simple path exists.
+			if produced[a.Target] {
+				continue
+			}
+			if duration+a.DurationMks > *horizonMks {
+				continue // Σ duration ≤ T_rec(X)
+			}
+			np := make(map[string]bool, len(produced)+1)
+			for k, v := range produced {
+				np[k] = v
+			}
+			np[a.Target] = true
+			ne := make(map[string]bool, len(seenEdges)+1)
+			for k, v := range seenEdges {
+				ne[k] = v
+			}
+			ne[a.ID] = true
+			walk(a.Target, np, ne, append(ids, a.ID), duration+a.DurationMks,
+				delta+a.Effect[entityID])
+		}
+	}
+	startsSet := map[string]bool{}
+	for _, a := range edges {
+		startsSet[a.Source] = true
+	}
+	starts := make([]string, 0, len(startsSet))
+	for s := range startsSet {
+		starts = append(starts, s)
+	}
+	sort.Strings(starts)
+	for _, s := range starts {
+		walk(s, map[string]bool{s: true}, map[string]bool{}, []string{}, 0.0, 0.0)
+	}
+	// Non-empty paths only: the empty path changes nothing and cannot raise a DoF.
+	out := []PathCand{}
+	for _, r := range results {
+		if len(r.Ids) > 0 {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		qi, qj := q6(out[i].Delta), q6(out[j].Delta)
+		if qi != qj {
+			return qi > qj
+		}
+		if len(out[i].Ids) != len(out[j].Ids) {
+			return len(out[i].Ids) < len(out[j].Ids)
+		}
+		return strings.Join(out[i].Ids, "\x00") < strings.Join(out[j].Ids, "\x00")
+	})
+	return out
+}
+
+// EnumerationComplete reports whether the last ReachabilityPaths call finished.
+// False means the implementation's own safety limit cut the search short, so the
+// absence of a raising path is NOT a proof of unreachability.
+func (g *WorldGraph) EnumerationComplete() bool { return !g.enumerationIncomplete }
+
+// SetEnumerationSafetyLimit sets this implementation's own protection bound for
+// §4.9's search. `nil` (the default, and the normative behaviour of §4.9)
+// enumerates every finite simple path: the existential the section states is over
+// all of them and names no depth. An implementation that sets a bound does so for
+// its own resource protection, and a verdict computed under a bound that was hit
+// reads `undetermined` — never `proven_unreachable`, which is a claim of
+// completeness the interrupted search has not earned.
+func (g *WorldGraph) SetEnumerationSafetyLimit(limit *int) {
+	g.enumerationSafetyLimit = limit
+}
+
 // ReachableActs is the entity's RESPONSE VECTORS (§4.6): admissible acts THIS
 // entity can perform. Deliberately filtered by `source`. Recoverability is a
 // different question — there the pool is every admissible act whose effect
@@ -535,8 +690,29 @@ func (g *WorldGraph) WeightsTo(numeraire string, resources []string) map[string]
 }
 
 // --------------------------------------------------------- verdicts (§4.9)
+// Verdict is §4.9's verdict with the caller's own `DoF(X | h)`; `dofBefore` is
+// nil when the caller does not supply it and the verdict falls back to the DoF
+// the graph mirrors for that entity (the degenerate case, not the rule: the
+// verdict is a value of `(G, state_h)`).
 func (g *WorldGraph) Verdict(entityID string, categories []string,
 	horizonMks *float64) Verdict {
+	return g.VerdictWithDoF(entityID, categories, horizonMks, nil)
+}
+
+// VerdictWithDoF is §4.9's rule, stated once.
+//
+// The condition is `DoF(X | h) + Δ_P(X) > 0` over a finite **simple** path of
+// structurally admissible acts whose total duration fits `T_rec(X)`. For an
+// entity at a known zero that reduces to `Δ_P(X) > 0`; for one already positive
+// it is satisfied by the **trivial** path (`P` a single vertex, `Δ_P = 0`,
+// duration 0), so a live entity is `reachable` without any path search — reading
+// the rule as requiring a raising path in every case would make a live entity
+// unrecoverable by construction (§10(J), fixture `ar`).
+//
+// `proven_unreachable` is a claim of **completeness** — §4.2 turns it into an
+// exclusion — so it is returned only when the enumeration actually finished.
+func (g *WorldGraph) VerdictWithDoF(entityID string, categories []string,
+	horizonMks *float64, dofBefore *float64) Verdict {
 	node, ok := g.Entities[entityID]
 	if !ok {
 		return Verdict{EntityID: entityID, Verdict: "undetermined",
@@ -554,23 +730,36 @@ func (g *WorldGraph) Verdict(entityID string, categories []string,
 		return Verdict{EntityID: entityID, Verdict: "undetermined",
 			Reason: "recovery horizon T_rec is not declared"}
 	}
+	base := node.CurrentDoF
+	if dofBefore != nil {
+		base = *dofBefore
+	}
 	// The recoverability pool is NOT the entity's own repertoire: anyone's
 	// admissible act may raise X's DoF. V counts what X itself can do.
 	pool := g.AdmissibleActs(categories, horizonMks)
-	raising := []string{}
-	for _, a := range pool {
-		if a.Effect[entityID] > 0.0 {
-			raising = append(raising, a.ID)
-		}
+	if base > 0.0 {
+		return Verdict{EntityID: entityID, Verdict: "reachable", Witness: []string{},
+			AdmissibleSeen: len(pool),
+			Reason: "DoF(X | h) > 0: the trivial path satisfies the condition (§4.9)"}
 	}
-	sort.Strings(raising)
-	if len(raising) > 0 {
-		return Verdict{EntityID: entityID, Verdict: "reachable", Witness: raising,
-			AdmissibleSeen: len(pool), Reason: "an admissible act raises DoF within T_rec"}
+	paths := g.ReachabilityPaths(entityID, categories, horizonMks,
+		g.enumerationSafetyLimit)
+	if !g.EnumerationComplete() {
+		return Verdict{EntityID: entityID, Verdict: "undetermined", Witness: []string{},
+			AdmissibleSeen: len(pool),
+			Reason: "the path search was stopped at the implementation's safety " +
+				"limit, so absence of a raising path is not a proof (§4.9)"}
+	}
+	for _, p := range paths {
+		if base+p.Delta > 0.0 {
+			return Verdict{EntityID: entityID, Verdict: "reachable", Witness: p.Ids,
+				AdmissibleSeen: len(pool),
+				Reason: "a structurally admissible simple path raises DoF within T_rec"}
+		}
 	}
 	return Verdict{EntityID: entityID, Verdict: "proven_unreachable", Witness: []string{},
 		AdmissibleSeen: len(pool),
-		Reason:         "complete observation, no admissible act raises DoF"}
+		Reason:         "complete observation, no structurally admissible simple path raises DoF within T_rec"}
 }
 
 // ------------------------------------------------ collapse act witness (§4.2)

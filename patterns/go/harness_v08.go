@@ -129,11 +129,16 @@ func runHarnessV08() {
 	fmt.Println("=== 6. §4.5: a path cut is a bar, and the third dimension cannot separate ===")
 	vecHelp := vectorOf(core, state, ctx, t1Help())
 	vecRival := vectorOf(core, state, ctx, t1Rival())
+	// `v0.11` §4.9: the condition is `DoF(X | h) + Δ_P(X) > 0`, and the
+	// **trivial** path is a finite simple path — so cutting a path does not make
+	// a *live* entity unreachable, and `D2` no longer fires for it (§10(J),
+	// fixtures `ar` and `ad`). `D2` keeps its teeth exactly where it matters: an
+	// option that drives the entity to a **known zero** and closes its recovery —
+	// which is what `t1_rival` does, and the assertion below still holds for it.
 	check("t1_help: it cuts a path without destroying anything",
-		vecHelp.D1 == 0 && vecHelp.D2 == 1 && vecHelp.D3 == 0, fmt.Sprintf("%v", vecHelp))
+		vecHelp.D1 == 0 && vecHelp.D2 == 0 && vecHelp.D3 == 0, fmt.Sprintf("%v", vecHelp))
 	helpLost := core.lostPaths(state, t1Help(), ctx)
-	check("t1_help: and the path it cuts is NOT the critical node's",
-		len(helpLost) == 1 && helpLost[0].EntityID == "trainee" && !helpLost[0].Critical,
+	check("t1_help: and no path is reported as lost", len(helpLost) == 0,
 		fmt.Sprintf("%v", helpLost))
 	check("closing the mentor's act costs it a vector and destroys nothing",
 		len(core.collapseCharges(state, t1Help(), ctx)) == 0 &&
