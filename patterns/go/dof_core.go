@@ -48,6 +48,76 @@ type SystemStateMatrix struct {
 	Resources               map[string]*ResourceObservation `json:"resources"`
 	// §3.2b (v0.9.1): τ as ResourceObservation.
 	Tau *ResourceObservation `json:"tau"`
+	// §3.2b (v0.11): the active individual deadlines τ is derived from. τ is
+	// `null` when **any** active deadline is unmeasured — never the minimum over
+	// the measured ones alone, and never `0.0` (§3.2b, §10(I), §10(ao)).
+	Deadlines map[string]*float64 `json:"deadlines"`
+	// §4.7 (v0.11): the declared measurement durations `t_m`, `t_v` per lens.
+	// Hashed ruler content: two states differing only in `t_m` produce different
+	// `ruler_digest` (§3.4.1, §10(an)).
+	MeasurementDurations map[string]map[string]float64 `json:"measurement_durations"`
+	// §4.7 (v0.11): the declared **schedule** `t` per lens — when the measurement
+	// is planned to happen. An undeclared schedule reads as `t = 0` (`u₀`); a
+	// declared `t > t*` is non-conformant input, never clamped.
+	MeasurementSchedule map[string]float64 `json:"measurement_schedule"`
+}
+
+// TauOf is §3.2b: τ as the calculus reads it — from the **resource map**, signed.
+//
+// `state.Tau` is the `tau` `ResourceObservation`. When it is absent or its
+// `value` is `null`, τ is **unmeasured** (`null`), never the minimum over the
+// measured deadlines alone and never `0.0`: an unmeasured active deadline may be
+// the most urgent one, so acting on the budget the measured ones support is
+// acting on a budget the state does not establish, and writing `0.0` invents a
+// catastrophe (§3.1, §3.2b).
+//
+// A **negative** value is a deadline that has passed, `|τ|` ago. It is a *known*
+// state and MUST NOT be clamped to `0.0` or replaced by `null`, which means
+// unmeasured only (§3.2b, §4.8b).
+func TauOf(state *SystemStateMatrix) *float64 {
+	if state == nil {
+		return nil
+	}
+	if state.Tau != nil {
+		if state.Tau.Value == nil {
+			return nil
+		}
+		v := *state.Tau.Value
+		return &v
+	}
+	// No `tau` observation at all: fall back to the declared individual
+	// deadlines, and only then to the deprecated mirror — which a port that
+	// predates the resource layer still writes. The mirror is read **only** when
+	// the state carries no resource-map τ and no deadline set, so it can never
+	// override a measurement (§3.2b).
+	if len(state.Deadlines) > 0 {
+		best := math.Inf(1)
+		for _, v := range state.Deadlines {
+			if v == nil {
+				return nil
+			}
+			if *v < best {
+				best = *v
+			}
+		}
+		return &best
+	}
+	v := state.GlobalTimeToCollapseMks
+	return &v
+}
+
+// MirrorTimeToCollapse is §3.1/§3.2b's deprecated mirror — clamped,
+// non-authoritative.
+//
+// Equal to τ when τ is known and non-negative, `0.0` when τ is negative or
+// `null`. It is **forbidden as an input to any rule** of §4.7, §4.8b or §5, and
+// the `1e15` µs synthetic default is withdrawn: a fabricated deadline is
+// indistinguishable from a measured one.
+func MirrorTimeToCollapse(tau *float64) float64 {
+	if tau == nil || *tau < 0.0 {
+		return 0.0
+	}
+	return *tau
 }
 
 type ActionOption struct {

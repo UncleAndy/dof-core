@@ -225,14 +225,33 @@ func TotalBudgetMks(tm, tv, taPlus, taMinus float64) float64 {
 	return tm + tv + math.Max(taPlus, taMinus)
 }
 
-func UOfT(u0, tauMks, tMeasMks, tMks float64) float64 {
-	tStar := tauMks - tMeasMks
-	if tStar <= 0.0 {
+func UOfT(u0 float64, tauMks *float64, tMeasMks, tMks float64) float64 {
+	// §4.7/§10(au): an **unmeasured** τ prices the ignorance at `u₀` — no window
+	// is computable, so no deadline is being spent. A τ that is known but leaves
+	// no window (`t* <= 0`) prices it at `ε`, not at `u₀`: the `v0.9.1` branch
+	// returned `u₀` here, which put a jump of ~13 nats exactly where measurement
+	// stops being possible.
+	if tauMks == nil {
 		return u0
+	}
+	tStar := *tauMks - tMeasMks
+	if tStar <= 0.0 {
+		return Epsilon
 	}
 	t := math.Max(0.0, math.Min(tMks, tStar))
 	w := t / tStar
 	return math.Pow(u0, 1.0-w) * math.Pow(Epsilon, w)
+}
+
+// tauJSON renders τ for the canonical dump: six-decimal string when measured,
+// `null` when not. An unmeasured τ MUST NOT be written as a number — `0.0` would
+// be a measured catastrophe and the `1e15` synthetic default a fabricated
+// deadline (§3.2b).
+func tauJSON(tau *float64) interface{} {
+	if tau == nil {
+		return nil
+	}
+	return canonFloat(*tau)
 }
 
 type LensTerm struct {
@@ -348,7 +367,7 @@ type MeasurementDeclaration struct {
 	LensOrder  []string
 	U0PriorQ   *float64
 	Entities   map[string]LensObservation
-	TauMks     float64
+	TauMks     *float64
 	Resources  []ResourceInfo
 	Groups     [][]string
 	Rates      map[string]RateInfo
@@ -365,6 +384,10 @@ type MeasurementDeclaration struct {
 	Verdicts       map[string]VerdictRecord
 	MeansClass     []string
 	GraphProcedure string
+	// §4.7 (v0.11): the declared measurement durations per lens, hashed ruler
+	// content. Omitted from the canonical dump when empty, so a state that
+	// declares none hashes exactly as it did before the field existed (§3.4.3).
+	MeasurementDurations map[string]map[string]float64
 }
 
 // VerdictRecord is one entity's declared verdict together with the counters and
@@ -376,7 +399,7 @@ type VerdictRecord struct {
 	V       int
 }
 
-func NewDeclaration(psiID string, entities map[string]LensObservation, tauMks float64, u0PriorQ *float64, resources []ResourceInfo, groups [][]string, rates map[string]RateInfo, mandate map[string]interface{}, numeraire *string, weights map[string]float64, mandateCap *float64, verdicts map[string]VerdictRecord, meansClass []string, graphProcedure string) *MeasurementDeclaration {
+func NewDeclaration(psiID string, entities map[string]LensObservation, tauMks *float64, u0PriorQ *float64, resources []ResourceInfo, groups [][]string, rates map[string]RateInfo, mandate map[string]interface{}, numeraire *string, weights map[string]float64, mandateCap *float64, verdicts map[string]VerdictRecord, meansClass []string, graphProcedure string, measurementDurations map[string]map[string]float64) *MeasurementDeclaration {
 	procs := make(map[string]string)
 	for _, lens := range lensOrder {
 		procs[lens] = psiID + ":" + lens
@@ -385,22 +408,23 @@ func NewDeclaration(psiID string, entities map[string]LensObservation, tauMks fl
 	cls := append([]string{}, meansClass...)
 	sort.Strings(cls)
 	return &MeasurementDeclaration{
-		PsiID:          psiID,
-		LensOrder:      lensOrder,
-		U0PriorQ:       u0PriorQ,
-		Entities:       entities,
-		TauMks:         tauMks,
-		Resources:      resources,
-		Groups:         canonicalGroups(groups, nil, nil),
-		Rates:          rates,
-		Mandate:        mandate,
-		Procedures:     procs,
-		Numeraire:      numeraire,
-		Weights:        weights,
-		MandateCap:     mandateCap,
-		Verdicts:       verdicts,
-		MeansClass:     cls,
-		GraphProcedure: graphProcedure,
+		PsiID:                psiID,
+		LensOrder:            lensOrder,
+		U0PriorQ:             u0PriorQ,
+		Entities:             entities,
+		TauMks:               tauMks,
+		Resources:            resources,
+		Groups:               canonicalGroups(groups, nil, nil),
+		Rates:                rates,
+		Mandate:              mandate,
+		Procedures:           procs,
+		Numeraire:            numeraire,
+		Weights:              weights,
+		MandateCap:           mandateCap,
+		Verdicts:             verdicts,
+		MeansClass:           cls,
+		GraphProcedure:       graphProcedure,
+		MeasurementDurations: measurementDurations,
 	}
 }
 
@@ -522,9 +546,19 @@ func (d *MeasurementDeclaration) CanonicalText() string {
 		u0 = canonFloat(*d.U0PriorQ)
 	}
 
+	// §3.4.3: an undeclared duration set is ONE condition — the procedure is
+	// undeclared and the window uncomputable — so an absent map and an empty one
+	// MUST hash alike, and the key is omitted when empty. That is also what keeps
+	// the field additive: a state that declares no duration hashes exactly as it
+	// did before the field existed (§3.4.1, §10(an)).
+	freeze := map[string]interface{}{"tau_mks": tauJSON(d.TauMks)}
+	if len(d.MeasurementDurations) > 0 {
+		freeze["measurement_durations"] = d.MeasurementDurations
+	}
+
 	doc := map[string]interface{}{
 		"entities":   entities,
-		"freeze":     map[string]interface{}{"tau_mks": canonFloat(d.TauMks)},
+		"freeze":     freeze,
 		"groups":     d.Groups,
 		"lens_order": d.LensOrder,
 		"mandate":    d.Mandate,

@@ -201,6 +201,9 @@ func (m *GraphMapper) PollEnvironment(raw map[string]interface{}) *SystemStateMa
 	var rates map[string]RateInfo
 	var units []ResourceInfo
 	var mandate map[string]interface{}
+	// §3.2b (v0.11): the active individual deadlines. An entry whose value is
+	// `null` is an UNMEASURED deadline and makes τ unknown — it is not absent.
+	var declaredDeadlines map[string]*float64
 
 	if layer, ok := raw["resource_layer"].(map[string]interface{}); ok {
 		if m_raw, ok := layer["means"].(map[string]interface{}); ok {
@@ -238,6 +241,20 @@ func (m *GraphMapper) PollEnvironment(raw map[string]interface{}) *SystemStateMa
 						obs.Estimated = &e
 					}
 					means_obs[k] = obs
+				}
+			}
+		}
+		// §3.2b (v0.11): the individual deadlines declared alongside the map. A
+		// `null` entry is an unmeasured ACTIVE deadline, not an absent one: it
+		// makes τ unknown rather than letting the measured deadlines decide.
+		if dl_raw, ok := layer["deadlines"].(map[string]interface{}); ok {
+			declaredDeadlines = make(map[string]*float64, len(dl_raw))
+			for k, v := range dl_raw {
+				if f, ok := v.(float64); ok {
+					fv := f
+					declaredDeadlines[k] = &fv
+				} else {
+					declaredDeadlines[k] = nil
 				}
 			}
 		}
@@ -323,10 +340,55 @@ func (m *GraphMapper) PollEnvironment(raw map[string]interface{}) *SystemStateMa
 		}
 	}
 
+	// §3.4.1/§3.4.2 (v0.11): the measurement durations are **declared ruler
+	// content**. They are read from the observation, never inferred (§4.7), and
+	// they are the same for every reading of the cycle — a hypothesis
+	// reinterprets what was measured, not how long the measuring takes.
+	measurementDurations := map[string]map[string]float64{}
+	if d_raw, ok := raw["measurement_durations"].(map[string]interface{}); ok {
+		for lens, dursRaw := range d_raw {
+			durs, ok := dursRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			inner := map[string]float64{}
+			for k, v := range durs {
+				if f, ok := v.(float64); ok {
+					inner[k] = f
+				}
+			}
+			measurementDurations[lens] = inner
+		}
+	}
+	measurementSchedule := map[string]float64{}
+	if s_raw, ok := raw["measurement_schedule"].(map[string]interface{}); ok {
+		for lens, v := range s_raw {
+			if f, ok := v.(float64); ok {
+				measurementSchedule[lens] = f
+			}
+		}
+	}
+
 	globalTTC := minTTC
 	if math.IsInf(globalTTC, 1) {
 		globalTTC = 1e15
 	}
+
+	// §3.2b (v0.11): τ is read from the **resource map**, and the individual
+	// deadlines declared alongside it govern it. Three cases, in this order:
+	//
+	//   1. declared individual deadlines — τ is their minimum, and is `null` when
+	//      **any** active deadline is unmeasured: taking the minimum over the
+	//      measured ones alone would read an unknown timer as absent (§10(w),
+	//      §10(ao));
+	//   2. otherwise the `tau` observation of the map, which may be negative (a
+	//      passed deadline keeps its magnitude, §10(p)) or `null`;
+	//   3. otherwise the legacy entity-minimum, kept so the historical fixtures of
+	//      `v0.6`-`v0.9.1` still read as they did.
+	tauValue := resolveTau(declaredDeadlines, means_obs["tau"], globalTTC)
+	// §3.2b/§10(s): the deprecated mirror is clamped and is **not** τ. It is `0.0`
+	// for an unknown and for a passed deadline, and equals τ otherwise.
+	mirrorTTC := MirrorTimeToCollapse(tauValue)
 
 	// §3.5 (v0.7): the observed world graph, when the cycle was given one.
 	var graph *WorldGraph
@@ -442,8 +504,9 @@ func (m *GraphMapper) PollEnvironment(raw map[string]interface{}) *SystemStateMa
 	}
 
 	// Pass 2: the declaration is frozen on S, so τ is known before measuring.
-	declaration := NewDeclaration(m.PsiID, observations, globalTTC, m.U0PriorQ, units, groups,
-		rates, mandate, numeraire, weights, capValue, verdicts, meansClass, graphProcedure)
+	declaration := NewDeclaration(m.PsiID, observations, tauValue, m.U0PriorQ, units, groups,
+		rates, mandate, numeraire, weights, capValue, verdicts, meansClass, graphProcedure,
+		measurementDurations)
 	m.LastDeclaration = declaration
 	u0 := declaration.U0()
 
@@ -490,14 +553,56 @@ func (m *GraphMapper) PollEnvironment(raw map[string]interface{}) *SystemStateMa
 	}
 
 	return &SystemStateMatrix{
-		GlobalTimeToCollapseMks: globalTTC,
+		GlobalTimeToCollapseMks: mirrorTTC,
 		ContextSwitchCost:       m.ContextSwitchCost,
 		Entities:                entities,
 		Psi:                     &PsiReference{ID: declaration.PsiID, Digest: declaration.Digest()},
 		Resources:               means_obs,
+		// §3.2b (v0.11): τ lives in the resource map — signed, and `null` when
+		// unmeasured. The `tau` entry of `means` **is** this object, so a rule that
+		// reads τ reads the map and not a field beside it.
 		Tau: &ResourceObservation{
-			Value: &globalTTC, Unit: "us", Scale: 1.0,
-			Source: "entity_min", LastMeasuredAt: 0.0, AgingTime: 0.0,
+			Value: tauValue, Unit: "us", Scale: 1.0,
+			Source: "resource_map", LastMeasuredAt: 0.0, AgingTime: 0.0,
 		},
+		Deadlines:            declaredDeadlines,
+		MeasurementDurations: measurementDurations,
+		MeasurementSchedule:  measurementSchedule,
 	}
+}
+
+// resolveTau is §3.2b's three-case resolution of τ over an observation, stated
+// once. It mirrors the reference port exactly:
+//
+//  1. declared individual deadlines — their minimum, and `null` when **any** of
+//     them is unmeasured. Taking the minimum over the measured ones alone would
+//     read an unknown timer as absent, and the unmeasured one may be the most
+//     urgent (§10(w), §10(ao));
+//  2. otherwise the `tau` observation of the map — signed, so a passed deadline
+//     keeps its magnitude, and `null` when the map says the value is unknown;
+//  3. otherwise the legacy entity-minimum, so the historical fixtures of
+//     `v0.6`-`v0.9.1` still read as they did.
+func resolveTau(deadlines map[string]*float64, tauObs *ResourceObservation,
+	legacy float64) *float64 {
+	if len(deadlines) > 0 {
+		best := math.Inf(1)
+		for _, v := range deadlines {
+			if v == nil {
+				return nil // an active deadline is unmeasured: τ is unknown
+			}
+			if *v < best {
+				best = *v
+			}
+		}
+		return &best
+	}
+	if tauObs != nil {
+		if tauObs.Value == nil {
+			return nil
+		}
+		v := *tauObs.Value
+		return &v
+	}
+	v := legacy
+	return &v
 }
