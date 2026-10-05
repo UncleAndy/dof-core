@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::dof_core::{
-    ActionOption, DofCalculusCore, DofReport, ObservationContext, RemovedOption, ReportInput,
-    SystemStateMatrix,
+    tau_of, ActionOption, DofCalculusCore, DofReport, ObservationContext, RemovedOption,
+    ReportInput, SystemStateMatrix,
 };
 use crate::generator::Generator;
 use crate::graph_mapper::{GraphMapper, RawObservation};
@@ -30,24 +30,52 @@ impl DofOrchestrator {
         }
     }
 
-    fn generate(&self, state: &SystemStateMatrix, tau: f64) -> Vec<ActionOption> {
-        if tau < Self::FAST_PASS_THRESHOLD_MKS {
-            self.generator.safe_fallback(state, 1)
-        } else {
-            self.generator.synthesize(state, 5)
+    /// §4.7: does this option resolve the named resource — is it a measurement *of* it?
+    fn discovers(option: &ActionOption, resource: &str) -> bool {
+        option.discovers.iter().any(|d| d == resource)
+    }
+
+    /// §5's reactive-circuit mode, evaluated **once** on the observed τ (§4.10):
+    /// the threshold is deliberately not hypothesis-conditional, because its only
+    /// consequence is the mode and the Generator runs once.
+    ///
+    /// An unknown budget selects `FAST_PASS`: an unknown budget never licenses the
+    /// expensive path. This is the rule `tau_of`'s `None` feeds — reading the
+    /// clamped mirror instead would make an unknown τ indistinguishable from a
+    /// passed one.
+    fn mode_for(&self, tau: Option<f64>) -> &'static str {
+        match tau {
+            Some(t) if t >= Self::FAST_PASS_THRESHOLD_MKS => "DEEP_DIVERSIFICATION",
+            _ => "FAST_PASS",
         }
     }
 
-    /// §5: keep the options that can complete before τ and record every removal
-    /// — a removal is a decision and must be visible (§6.2).
+    fn generate(&self, state: &SystemStateMatrix, tau: Option<f64>) -> Vec<ActionOption> {
+        if matches!(tau, Some(t) if t >= Self::FAST_PASS_THRESHOLD_MKS) {
+            self.generator.synthesize(state, 5)
+        } else {
+            self.generator.safe_fallback(state, 1)
+        }
+    }
+
+    /// §5/§4.8b: keep the options that can complete before τ and record every
+    /// removal — a removal is a decision and must be visible (§6.2).
+    ///
+    /// τ is `tau_of(state)`, never the deprecated mirror. An **unknown** τ is not
+    /// a passed deadline: §4.8b's null case admits only the candidate that measures
+    /// τ, because an unknown budget never licenses acting on it.
     fn viability_gate(
         options: Vec<ActionOption>,
-        tau: f64,
+        tau: Option<f64>,
     ) -> (Vec<ActionOption>, Vec<RemovedOption>) {
         let mut viable = Vec::new();
         let mut removed = Vec::new();
         for option in options {
-            if option.estimated_duration_mks <= tau {
+            let keep = match tau {
+                None => Self::discovers(&option, "tau"),
+                Some(t) => option.estimated_duration_mks <= t,
+            };
+            if keep {
                 viable.push(option);
             } else {
                 removed.push(RemovedOption {
@@ -107,7 +135,10 @@ impl DofOrchestrator {
 
     pub fn step(&mut self, raw: &HashMap<String, RawObservation>) -> Option<ActionOption> {
         let state = self.mapper.poll_environment(raw);
-        let tau = state.global_time_to_collapse_mks;
+        // §3.2b (v0.11): τ comes from the resource map — signed, `null` when
+        // unmeasured. The deprecated `global_time_to_collapse_mks` mirror is never
+        // an input to a rule (§3.1, §4.7, §4.8b).
+        let tau = tau_of(&state);
         let options = self.generate(&state, tau);
         let (options, _removed) = Self::viability_gate(options, tau);
         let ctx = self.observation();
@@ -139,13 +170,12 @@ impl DofOrchestrator {
     /// correct. Borrowing avoids the miscompile; Go, C++ and Python are
     /// correct at full optimization.
     pub fn decide(&self, state: &SystemStateMatrix) -> (Option<ActionOption>, DofReport) {
-        let mode = if state.global_time_to_collapse_mks < Self::FAST_PASS_THRESHOLD_MKS {
-            "FAST_PASS"
-        } else {
-            "DEEP_DIVERSIFICATION"
-        };
-        let options = self.generate(state, state.global_time_to_collapse_mks);
-        let (options, removed) = Self::viability_gate(options, state.global_time_to_collapse_mks);
+        // §3.2b (v0.11): τ is read from the resource map — signed, and `null` when
+        // unmeasured. The deprecated mirror is never an input to a rule.
+        let tau = tau_of(state);
+        let mode = self.mode_for(tau);
+        let options = self.generate(state, tau);
+        let (options, removed) = Self::viability_gate(options, tau);
         let ctx = self.observation();
         let (options, removed_structural) = (options, Vec::new());
         // Gate order is normative (§5 → §4.8): the reason a reader needs first is

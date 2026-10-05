@@ -446,6 +446,11 @@ pub struct DofReport {
     pub entities: Vec<EntityReportRow>,
     pub total_system_dof: f64,
     pub context_switch_cost: f64,
+    /// §3.2b (v0.11): the **deprecated mirror** of τ, carried for a reader of the
+    /// historical reports only. It is clamped — `0.0` for an unknown and for a
+    /// passed deadline — and it is **not** the τ any rule reads: every rule takes
+    /// `tau_of(state)`, which is signed and `null` when unmeasured. A report that
+    /// presents this field as τ is non-conformant.
     pub global_time_to_collapse_mks: f64,
     pub mode: String,
     pub options: Vec<OptionReportRow>,
@@ -1241,8 +1246,13 @@ impl DofCalculusCore {
                     if amount_source > source_available {
                         continue; // the price is not payable
                     }
-                    if total_duration + spec.duration_mks > state.global_time_to_collapse_mks {
-                        continue; // the exchange does not fit in τ
+                    // §4.8 (v0.11): the exchange is taken only if it fits inside the
+                    // budget the **resource map** establishes. With an unmeasured τ
+                    // nothing fits, so the deficit stays uncovered instead of being
+                    // closed against a fabricated deadline (§3.2b).
+                    match tau_of(state) {
+                        Some(t) if total_duration + spec.duration_mks <= t => {}
+                        _ => continue,
                     }
                     offers.push((
                         weight_of(source) * amount_source,
@@ -1393,8 +1403,15 @@ impl DofCalculusCore {
             if touched {
                 continue;
             }
-            if state.global_time_to_collapse_mks - cheapest > 0.0 {
-                return true;
+            // §4.7 (v0.11): the window is `τ − T_meas` over the resource map's τ. An
+            // **unmeasured** τ has no window at all, and that is not the same as a
+            // window of zero: `t* ≤ 0` says the deadline is already lost, `null`
+            // says it was never measured, so the strict `t* > 0` rule is not applied
+            // to it (§5, §3.2b).
+            if let Some(t_star) = measurement_window(state, cheapest) {
+                if t_star > 0.0 {
+                    return true;
+                }
             }
         }
         false
