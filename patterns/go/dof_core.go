@@ -136,20 +136,132 @@ func MirrorTimeToCollapse(tau *float64) float64 {
 type ActionOption struct {
 	OptionID             string                        `json:"option_id"`
 	Description          string                        `json:"description"`
-	ProjectedDoFDelta    map[string]float64            `json:"projected_dof_delta"`
-	ProjectedResourceDelta map[string]map[string]float64 `json:"projected_resource_delta"`
+	// §3.3 (v0.11): **two forms, never mixed within one option.**
+	//   flat           — {entity_id: delta}, applied under every hypothesis
+	//   per_hypothesis — {hypothesis_id: {entity_id: delta}}, the entry for `h`
+	//                    used under `h`, entities unlisted for `h` taking 0.0
+	// An option in the flat form asserts that its effect does not depend on the
+	// causal reading; the per-hypothesis form is meaningful only when a
+	// hypothesis set is declared. The port carries the two forms in two fields
+	// rather than one union-typed field; `ProjectionForm` is the single place
+	// that decides which form an option is in, and a non-empty pair is
+	// `"invalid"` (§3.3, §10(B)).
+	ProjectedDoFDelta      map[string]float64              `json:"projected_dof_delta"`
+	ProjectedByHypothesis  map[string]map[string]float64   `json:"projected_dof_delta_by_hypothesis"`
+	ProjectedResourceDelta map[string]map[string]float64   `json:"projected_resource_delta"`
 	IsReversible         bool                          `json:"is_reversible"`
 	EstimatedDurationMks float64                       `json:"estimated_duration_mks"`
-	ProjectedTauDelta    float64                       `json:"projected_tau_delta"`
+	// §3.3 (v0.11): the projected τ change. `nil` means **not computable** —
+	// which happens exactly when τ is unknown — and is admissible only for an act
+	// that resolves τ. Derived, never independently declared, for such an act: it
+	// MUST equal `projected_tau_value - (τ - estimated_duration_mks)`.
+	ProjectedTauDelta *float64 `json:"projected_tau_delta"`
+	// §3.3 (v0.11): the value the option expects `tau` to hold AFTER it executes.
+	// Present iff `discovers` names "tau". MAY be negative (§3.2b).
+	ProjectedTauValue *float64 `json:"projected_tau_value"`
 	// §3.3/§4.4 (v0.7): the transitions this option CLOSES — the acts and means
 	// that cease to exist once it executes. `is_reversible` is DERIVED from this
 	// list (true exactly when it is empty) and is kept only as a reported field:
 	// a label that could be set to dodge the price is not a rule.
-	Closed []ClosedRef `json:"closed"`
-	ActID  string      `json:"act_id"`
+	//
+	// §4.4 (v0.11): the closure list has the same two forms as the projection.
+	Closed             []ClosedRef            `json:"closed"`
+	ClosedByHypothesis map[string][]ClosedRef `json:"closed_by_hypothesis"`
+	ActID              string                 `json:"act_id"`
 	// §3.3 (v0.9): resources needed for gate checks, resources resolved by execution.
 	Requires  []string `json:"requires"`
 	Discovers []string `json:"discovers"`
+}
+
+// ProjectionForm is `"flat"` | `"per_hypothesis"` | `"invalid"` (§3.3, §10(B)).
+func (o *ActionOption) ProjectionForm() string {
+	flat := len(o.ProjectedDoFDelta) > 0
+	nested := len(o.ProjectedByHypothesis) > 0
+	if flat && !nested {
+		return "flat"
+	}
+	if nested && !flat {
+		return "per_hypothesis"
+	}
+	if !flat && !nested {
+		// An option declaring no delta at all is the flat form: the empty map is
+		// a flat map, and reading it as "invalid" would refuse every baseline.
+		return "flat"
+	}
+	return "invalid"
+}
+
+// ClosureForm is `"flat"` | `"per_hypothesis"` | `"invalid"` (§4.4, §10(B)).
+func (o *ActionOption) ClosureForm() string {
+	flat := len(o.Closed) > 0
+	nested := len(o.ClosedByHypothesis) > 0
+	if flat && !nested {
+		return "flat"
+	}
+	if nested && !flat {
+		return "per_hypothesis"
+	}
+	if !flat && !nested {
+		return "flat"
+	}
+	return "invalid"
+}
+
+// DeltaFor is the declared delta this option contributes under `hypothesisID`.
+func (o *ActionOption) DeltaFor(hypothesisID, entityID string) float64 {
+	if o.ProjectionForm() == "per_hypothesis" {
+		perH := o.ProjectedByHypothesis[hypothesisID]
+		if perH == nil {
+			return 0.0
+		}
+		return perH[entityID]
+	}
+	return o.ProjectedDoFDelta[entityID]
+}
+
+// ClosedFor is the closures this option declares under `hypothesisID`.
+func (o *ActionOption) ClosedFor(hypothesisID string) []ClosedRef {
+	if o.ClosureForm() == "per_hypothesis" {
+		return o.ClosedByHypothesis[hypothesisID]
+	}
+	return o.Closed
+}
+
+// FlatDelta is the flat delta map, whichever form the option uses.
+//
+// Used where a single map is needed for `nil`-safety (the baseline); a
+// per-hypothesis option returns the **union** of its entries, which is only
+// meaningful for existence questions.
+func (o *ActionOption) FlatDelta() map[string]float64 {
+	if o.ProjectionForm() == "per_hypothesis" {
+		merged := map[string]float64{}
+		for _, perH := range o.ProjectedByHypothesis {
+			for eID, delta := range perH {
+				if cur, ok := merged[eID]; !ok || delta > cur {
+					merged[eID] = delta
+				}
+			}
+		}
+		return merged
+	}
+	out := map[string]float64{}
+	for k, v := range o.ProjectedDoFDelta {
+		out[k] = v
+	}
+	return out
+}
+
+// FormsConsistent is §3.3/§4.4: the two forms MUST NOT be mixed within one
+// option. An empty result means the option is well formed.
+func (o *ActionOption) FormsConsistent() string {
+	if o.ProjectionForm() == "invalid" {
+		return o.OptionID + ": `projected_dof_delta` mixes the flat and " +
+			"per-hypothesis forms (§3.3)"
+	}
+	if o.ClosureForm() == "invalid" {
+		return o.OptionID + ": `closed` mixes the flat and per-hypothesis forms (§4.4)"
+	}
+	return ""
 }
 
 // ObservationContext is the observation a cycle is decided over (§3.5, §4.9).

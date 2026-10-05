@@ -96,9 +96,9 @@ func runHarnessV091() {
 			ProjectedDoFDelta:     map[string]float64{"patient": 0.2},
 			ProjectedResourceDelta: map[string]map[string]float64{"patient": {"energy": -5.0}},
 			EstimatedDurationMks:  1000.0,
-			ProjectedTauDelta:     5000.0,
+			ProjectedTauDelta:     ptr(5000.0),
 		}
-		tauAfter := tauBefore - option.EstimatedDurationMks + option.ProjectedTauDelta
+		tauAfter := tauBefore - option.EstimatedDurationMks + *option.ProjectedTauDelta
 		v091Check("CPR increases τ", tauAfter > tauBefore)
 		v091Check("CPR delta is +4000 net", tauAfter-tauBefore == 4000.0, fmt.Sprintf("actual=%.0f", tauAfter-tauBefore))
 		_ = option
