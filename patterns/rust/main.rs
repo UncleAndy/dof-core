@@ -6,12 +6,14 @@ mod dof_core;
 mod fixture_v07;
 mod generator;
 mod graph_mapper;
+mod hypothesis;
 mod harness_v07;
 mod harness_v08;
 mod harness_v091;
 mod measurement;
 mod options_v07;
 mod orchestrator;
+mod viability;
 mod world_graph;
 
 use std::collections::{BTreeMap, HashMap};

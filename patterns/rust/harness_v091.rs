@@ -129,7 +129,10 @@ pub fn run_harness_v091() -> Vec<String> {
             .into(),
             closed: Vec::new(),
             act_id: String::new(),
-            projected_tau_delta: 0.0,
+            projected_by_hypothesis: HashMap::new(),
+            closed_by_hypothesis: HashMap::new(),
+            projected_tau_delta: Some(0.0),
+            projected_tau_value: None,
             discovers: Vec::new(),
             requires: vec!["medical_supply".to_string()],
         };
@@ -192,11 +195,18 @@ pub fn run_harness_v091() -> Vec<String> {
             .into(),
             closed: Vec::new(),
             act_id: String::new(),
-            projected_tau_delta: 5000.0,
+            projected_by_hypothesis: HashMap::new(),
+            closed_by_hypothesis: HashMap::new(),
+            projected_tau_delta: Some(5000.0),
+            projected_tau_value: None,
             discovers: Vec::new(),
             requires: Vec::new(),
         };
-        let tau_after = tau_before - option.estimated_duration_mks + option.projected_tau_delta;
+        // §3.3 (v0.11): the delta is an `Option` because `null` is a real state —
+        // "not computable" — and a `f64` physically could not express it. The
+        // `v0.9.1` rule itself is unchanged: this option declares its delta.
+        let tau_after =
+            tau_before - option.estimated_duration_mks + option.projected_tau_delta.unwrap();
         check91(
             &mut failures,
             "CPR increases τ",

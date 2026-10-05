@@ -191,6 +191,15 @@ pub struct SystemStateMatrix {
     pub measurement_schedule: BTreeMap<String, f64>,
 }
 
+/// §4.7: does this option resolve the named resource — is it a measurement *of* it?
+///
+/// Stated once: the viability condition (§4.8b), the temporal derivation and the
+/// orchestrator's gate all ask the same question, and a second copy of it is how
+/// "measure τ first" drifts into "measure anything first".
+pub fn option_discovers(option: &ActionOption, resource: &str) -> bool {
+    option.discovers.iter().any(|d| d == resource)
+}
+
 /// §3.2b: τ as the calculus reads it — from the **resource map**, signed.
 ///
 /// `state.tau` is the `tau` `ResourceObservation`. When it is absent or its
@@ -254,8 +263,23 @@ pub struct ActionOption {
     pub closed: Vec<ClosedRef>,
     /// The graph act implementing this option.
     pub act_id: String,
-    /// §3.3 (v0.9.1): projected change of τ (time-to-collapse) caused by this option.
-    pub projected_tau_delta: f64,
+    /// §3.3 (v0.11): the same declaration in the **per-hypothesis** form —
+    /// `{hypothesis_id: {entity_id: delta}}`. Empty means the option declares the
+    /// flat form. An option that fills **both** forms is **invalid** input, never a
+    /// merge: the two forms are different claims about the same effect, and an
+    /// option that makes both cannot be scored under either (§3.3, §10(B)).
+    pub projected_by_hypothesis: HashMap<String, HashMap<String, f64>>,
+    /// §4.4 (v0.11): the closure list in the per-hypothesis form, with the same
+    /// two-forms-never-mixed rule.
+    pub closed_by_hypothesis: HashMap<String, Vec<ClosedRef>>,
+    /// §3.3 (v0.9.1): projected change of τ (time-to-collapse) caused by this
+    /// option. §3.3 (v0.11): `None` means **not computable** — which happens
+    /// exactly when τ is unknown — and is admissible only for an act that resolves
+    /// τ.
+    pub projected_tau_delta: Option<f64>,
+    /// §3.3 (v0.11): the value the option expects `tau` to hold AFTER it executes.
+    /// Present iff `discovers` names "tau". MAY be negative (§3.2b).
+    pub projected_tau_value: Option<f64>,
     /// §3.3 (v0.9.1): resources whose value becomes known after this option executes.
     pub discovers: Vec<String>,
     /// §3.3 (v0.9.1): resources needed for gate checks.
@@ -279,10 +303,127 @@ impl ActionOption {
             projected_resource_delta: HashMap::new(),
             closed: Vec::new(),
             act_id: String::new(),
-            projected_tau_delta: 0.0,
+            projected_by_hypothesis: HashMap::new(),
+            closed_by_hypothesis: HashMap::new(),
+            projected_tau_delta: None,
+            projected_tau_value: None,
             discovers: Vec::new(),
             requires: Vec::new(),
         }
+    }
+
+    // ------------------------------------------------------------ §3.3 forms
+    //
+    // `v0.11` gave an option's declared effect **two forms, never mixed within one
+    // option** (§3.3, §4.4):
+    //
+    //   * **flat** — the effect is the same under every reading, which is what an
+    //     option asserts when it says nothing about the causal reading;
+    //   * **per_hypothesis** — the entry for `h` is used under `h`, and an entity
+    //     the entry does not list takes `0.0` under `h`.
+    //
+    // The form is decided in **one** place. Reading the declared content directly
+    // at each call site is how the two forms drift apart: a port that reads the
+    // flat map "by default" silently scores a per-hypothesis option as if it had
+    // one effect, and the worst-case operators of §4.10 then minimise over
+    // readings of a number that never depended on them.
+
+    /// `"flat"` | `"per_hypothesis"` | `"invalid"` (§3.3, §10(B)).
+    pub fn projection_form(&self) -> &'static str {
+        let flat = !self.projected_dof_delta.is_empty();
+        let nested = !self.projected_by_hypothesis.is_empty();
+        if flat && !nested {
+            return "flat";
+        }
+        if nested && !flat {
+            return "per_hypothesis";
+        }
+        // An option declaring no delta at all is the flat form: the empty map is a
+        // flat map, and reading it as "invalid" would refuse every baseline.
+        "flat"
+    }
+
+    /// `"flat"` | `"per_hypothesis"` | `"invalid"` (§4.4, §10(B)).
+    pub fn closure_form(&self) -> &'static str {
+        let flat = !self.closed.is_empty();
+        let nested = !self.closed_by_hypothesis.is_empty();
+        if flat && !nested {
+            return "flat";
+        }
+        if nested && !flat {
+            return "per_hypothesis";
+        }
+        "flat"
+    }
+
+    /// The declared delta of `entity_id` **under the reading `hypothesis_id`**.
+    ///
+    /// In the per-hypothesis form an entity the reading does not list takes `0.0`:
+    /// "not declared under this reading" is a claim of no effect, and a missing
+    /// entry is never inherited from another reading.
+    pub fn delta_for(&self, hypothesis_id: &str, entity_id: &str) -> f64 {
+        if self.projection_form() == "per_hypothesis" {
+            return self
+                .projected_by_hypothesis
+                .get(hypothesis_id)
+                .and_then(|m| m.get(entity_id))
+                .copied()
+                .unwrap_or(0.0);
+        }
+        self.projected_dof_delta.get(entity_id).copied().unwrap_or(0.0)
+    }
+
+    /// The closure list **under the reading `hypothesis_id`** (§4.4).
+    pub fn closed_for(&self, hypothesis_id: &str) -> Vec<ClosedRef> {
+        if self.closure_form() == "per_hypothesis" {
+            return self
+                .closed_by_hypothesis
+                .get(hypothesis_id)
+                .cloned()
+                .unwrap_or_default();
+        }
+        self.closed.clone()
+    }
+
+    /// The flat map as declared, for callers that have no reading in hand.
+    pub fn flat_delta(&self) -> HashMap<String, f64> {
+        self.projected_dof_delta.clone()
+    }
+
+    /// The empty string when both forms are consistent, otherwise the reason.
+    pub fn forms_consistent(&self) -> String {
+        if self.projection_form() == "invalid" {
+            return format!(
+                "{}: `projected_dof_delta` mixes the flat and per-hypothesis forms (§3.3)",
+                self.option_id
+            );
+        }
+        if self.closure_form() == "invalid" {
+            return format!(
+                "{}: `closed` mixes the flat and per-hypothesis forms (§4.4)",
+                self.option_id
+            );
+        }
+        String::new()
+    }
+
+    /// §4.5: `is_reversible` **under the reading `hypothesis_id`** — the flag is
+    /// derived from that reading's closure list and is never trusted as declared.
+    pub fn is_reversible_for(&self, hypothesis_id: &str) -> bool {
+        self.closed_for(hypothesis_id).is_empty()
+    }
+
+    /// Every closure list the option declares, in both forms. The §4.4 guards must
+    /// hold for **all** of them: an option whose declaration is well-formed under
+    /// one reading and malformed under another is malformed (§4.4).
+    pub fn all_closed_lists(&self) -> Vec<Vec<ClosedRef>> {
+        let mut out = vec![self.closed.clone()];
+        let mut keys: Vec<&String> = self.closed_by_hypothesis.keys().collect();
+        keys.sort();
+        for k in keys {
+            out.push(self.closed_by_hypothesis[k].clone());
+        }
+        out
     }
 
     /// Declare what the option closes (§3.3/§4.4). `is_reversible` is derived from

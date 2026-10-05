@@ -32,7 +32,7 @@ impl DofOrchestrator {
 
     /// §4.7: does this option resolve the named resource — is it a measurement *of* it?
     fn discovers(option: &ActionOption, resource: &str) -> bool {
-        option.discovers.iter().any(|d| d == resource)
+        crate::dof_core::option_discovers(option, resource)
     }
 
     /// §5's reactive-circuit mode, evaluated **once** on the observed τ (§4.10):
