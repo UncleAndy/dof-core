@@ -634,9 +634,11 @@ struct MeasurementDeclaration {
 
     // Canonical form (§3.4.3): UTF-8 JSON, keys sorted, no insignificant
     // whitespace, non-integer numbers as fixed six-decimal strings.
-    std::string canonical_text() const {
+    // §3.4.2/§3.4.3 (v0.11): the per-entity block of the canonical document.
+    // Reading-specific — it is dropped from the **ruler** form.
+    std::string entities_json() const {
         std::ostringstream os;
-        os << "{\"entities\":{";
+        os << "{";
         bool first = true;
         for (const auto& kv : entities) {
             if (!first) os << ",";
@@ -706,8 +708,17 @@ struct MeasurementDeclaration {
             }
             os << "}";
         }
-        os << "},\"freeze\":{" << freeze_json() << "}"
-           << ",\"graph_procedure\":" << quote(graph_procedure)
+        os << "}";
+        return os.str();
+    }
+
+    // §3.4.3/§3.4.2 (v0.11): everything of the canonical document except the
+    // reading-specific blocks — `entities`, `freeze` (τ and the declared
+    // durations) and, in the ruler form, `verdicts`. Keys keep the canonical
+    // order, so the ruler text is exactly the document with those three removed.
+    std::string canonical_tail(bool with_verdicts) const {
+        std::ostringstream os;
+        os << "\"graph_procedure\":" << quote(graph_procedure)
            << ",\"groups\":" << groups_json()
            << ",\"lens_order\":[\"variety\",\"options\",\"constraint\"]"
            << ",\"mandate\":" << mandate_json()
@@ -737,13 +748,42 @@ struct MeasurementDeclaration {
         } else {
             os << "null";
         }
-        os << ",\"verdicts\":" << verdicts_json()
-           << ",\"weights\":" << weights_json()
-           << "}";
+        if (with_verdicts) {
+            os << ",\"verdicts\":" << verdicts_json();
+        }
+        os << ",\"weights\":" << weights_json();
+        return os.str();
+    }
+
+    // §3.4.3: the canonical document of one reading.
+    std::string canonical_text() const {
+        std::ostringstream os;
+        os << "{\"entities\":" << entities_json() << ",\"freeze\":{" << freeze_json() << "},"
+           << canonical_tail(true) << "}";
+        return os.str();
+    }
+
+    // §3.4.2 (v0.11): the **ruler** text of §3.4.1 — the document without the
+    // reading-specific blocks. Two readings of one cycle have equal ruler text and
+    // different document text, which is what makes the `min_h` of §4.10 a
+    // conformant output while a comparison of two different rulers is not.
+    //
+    // `freeze` is dropped here although it carries the declared durations: the
+    // durations are ruler **content** for the reading (§3.4.1 — a reading may not
+    // reinterpret how long the measuring takes), but τ belongs to the cycle, and
+    // the ruler is the key under which readings of one cycle may be aggregated.
+    // Keeping τ in it would make two cycles with different budgets incomparable
+    // under the very digest meant to make them comparable.
+    std::string ruler_canonical_text() const {
+        std::ostringstream os;
+        os << "{" << canonical_tail(false) << "}";
         return os.str();
     }
 
     std::string digest() const { return sha256_hex(canonical_text()); }
+
+    // §3.4.2: the shared comparability key of one cycle.
+    std::string ruler_digest() const { return sha256_hex(ruler_canonical_text()); }
 };
 
 }  // namespace dof

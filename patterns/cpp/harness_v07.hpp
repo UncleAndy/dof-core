@@ -33,6 +33,15 @@ const std::string kExpectedObservationDigest =
     "f3891c6ab622325fd6668893dd9f7450d39aa2d0a7ad2849634a4f59219f6a1c";
 const std::string kV06Digest =
     "bed37c25fd9cb757e9ea4a861c01cd4660fd896a83cd39b7c73b8e0be7489ad4";
+// The **ruler-level** digest of the same fixture (§3.4.2, v0.11): the declaration
+// document without the reading-specific blocks (`entities`, `freeze`, `verdicts`).
+// This is the key under which two readings of one cycle may be aggregated — the
+// full declaration digest above is the key of one *reading*, and it is the value
+// the Python port's `ruler_digest()` produces. A port that reproduced only the
+// declaration digest would pass every historical check and still disagree about
+// which numbers may be compared with which.
+const std::string kExpectedRulerDigestV011 =
+    "81948b8b3ca9805a75624c4d136f5926b9347c42ed3c6415966fc6f43f4301ba";
 
 std::vector<std::string> g_failures7;
 int g_checks7 = 0;
@@ -544,6 +553,8 @@ inline int run_harness_v07() {
     std::cout << "OBSERVATION digest=" << ctx->observation_digest << "\n";
     check7("the ruler digest equals the frozen v0.7 value byte for byte",
            decl.digest() == kExpectedRulerDigest);
+    check7("the v0.11 ruler-level digest equals the frozen value byte for byte",
+           decl.ruler_digest() == kExpectedRulerDigestV011);
     check7("the observation digest equals the frozen v0.7 value byte for byte",
            ctx->observation_digest == kExpectedObservationDigest);
     std::cout << "\nREPORT (v0.7 fixture): entities=" << report.entities.size()
@@ -568,9 +579,30 @@ inline int dump_reference() {
     orch.measure(fixture_v07::scene());
     const dof::MeasurementDeclaration& decl = *orch.mapper_ref().last_declaration;
     std::cout << decl.canonical_text() << "\n";
-    std::cout << "RULER " << decl.digest() << "\n";
+    std::cout << "DECLARATION " << decl.digest() << "\n";
+    std::cout << "RULER " << decl.ruler_digest() << "\n";
     if (orch.mapper_ref().last_observation) {
         std::cout << "OBSERVATION " << orch.mapper_ref().last_observation->observation_digest << "\n";
     }
+    // §3.4.1/§3.4.2 (v0.11): what a declared measurement duration does to each text.
+    //
+    // The durations are hashed **ruler** content for the reading (§3.4.1), so they
+    // move the declaration document; the ruler text keys the **cycle** and excludes
+    // `freeze` — where the durations and τ live — so it does not move. Printing the
+    // fragment is what makes a cross-port disagreement on this field a diff instead
+    // of a mystery: the reference produces
+    //   "freeze":{"measurement_durations":{"variety":{"t_m":"100.000000",
+    //   "t_v":"50.000000"}},"tau_mks":"4000000.000000"}
+    // for this fixture.
+    dof::MeasurementDeclaration dur = decl;
+    dur.measurement_durations = {{"variety", {{"t_m", 100.0}, {"t_v", 50.0}}}};
+    const std::string text = dur.canonical_text();
+    const std::size_t p = text.find("\"freeze\":");
+    const std::size_t e = text.find(",\"graph_procedure\"");
+    if (p != std::string::npos && e != std::string::npos && e > p) {
+        std::cout << "FREEZE_WITH_DURATIONS " << text.substr(p, e - p) << "\n";
+    }
+    std::cout << "DECLARATION_WITH_DURATIONS " << dur.digest() << "\n";
+    std::cout << "RULER_WITH_DURATIONS " << dur.ruler_digest() << "\n";
     return 0;
 }
