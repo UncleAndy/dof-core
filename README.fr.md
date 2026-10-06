@@ -23,6 +23,7 @@ DOF/
     license.md                  ← CC BY-SA 4.0 + Proof of Implementation
     dof-assessment-toolkit.md   ← comment mesurer le DoF d'un module / d'une personne / d'un système
     framing-traps.md            ← filtre cognitif appliqué avant de générer des options
+    releases.md                 ← versions publiées et leurs empreintes de fichier
   patterns/
     PATTERNS.{md,ru,fr,de,es,eo}  ← plan directeur d'ingénierie (multilingue)
     python/  rust/  go/  cpp/     ← illustrations minimales exécutables (quatre ports de la même logique)
@@ -33,6 +34,20 @@ DOF/
 Lisez `SKILL.md` pour la philosophie. Lisez `DOF-SPEC.md` si vous construisez une implémentation conforme — il définit le modèle de données, les mathématiques, la temporisation du circuit réactif et l'audit obligatoire exigé par la licence.
 
 `drafts/` contient des notes de travail non normatives : questions de conception ouvertes, formules candidates et analyses encore en discussion. Elles sont purement informatives — elles ne font pas partie de `SKILL.md` ni de `DOF-SPEC.md`, peuvent contredire le standard actuel et ne doivent jamais être citées comme normatives. Voir `drafts/README.md`.
+
+## Versions et vérification
+
+La version courante est **`DOF-SPEC` `v0.11`** — étiquette git `v0.11`, commit `9d66541`. Son texte normatif est complet et les quatre ports de référence sont vérifiés : `patterns/tools/verify_ports.sh` rapporte **VERIFIED** (Python 112 vérifications, Go 83, Rust 83, C++ 84, aucun échec).
+
+Pour confirmer que la copie que vous lisez est bien celle publiée :
+
+```sh
+git checkout v0.11
+sha256sum DOF-SPEC.md                   # 4211950fc708cbc6404ad47c2cfbbddadd7d22f5ff3b5b2647a5f3859449c873
+bash patterns/tools/verify_ports.sh     # → VERIFIED
+```
+
+L'empreinte est publiée avec la version afin qu'une modification silencieuse du fichier soit détectable (§10 de la spécification). Comme `v0.11` est étiquetée, toute modification de `DOF-SPEC.md` après la publication change le fichier et la valeur publiée cesse de lui correspondre. Les empreintes des versions antérieures — `v0.7`, `v0.8`, `v0.9.1` et des deux versions de transition qui n'ont jamais été étiquetées — sont réunies dans `references/releases.md`.
 
 ## Comment cela fonctionne (la boucle)
 

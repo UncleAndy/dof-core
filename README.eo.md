@@ -23,6 +23,7 @@ DOF/
     license.md                  ← CC BY-SA 4.0 + Proof of Implementation
     dof-assessment-toolkit.md   ← kiel mezuri la DoF de modulo / persono / sistemo
     framing-traps.md            ← kogna filtrilo antaŭ opci-generado
+    releases.md                 ← eldonitaj versioj kaj iliaj dosier-haketoj
   patterns/
     PATTERNS.{md,ru,fr,de,es,eo}  ← inĝeniera modelo (multlingva)
     python/  rust/  go/  cpp/     ← minimumaj ekzekuteblaj ilustraĵoj (kvar portoj de la sama logiko)
@@ -33,6 +34,20 @@ DOF/
 Legu `SKILL.md` por la filozofio. Legu `DOF-SPEC.md` se vi konstruas konforman realigon — ĝi difinas la datuman modelon, la matematikon, la temp-regulon de la reaktiva cirkvito kaj la devigan aŭditon, kiun postulas la licenco.
 
 `drafts/` enhavas nenormajn labornotojn: malfermaj dezajn-demandoj, kandidataj formuloj kaj analizoj ankoraŭ diskutataj. Ili estas nur informaj — ne parto de `SKILL.md` aŭ `DOF-SPEC.md`, povas kontraŭdiri la nunan normon kaj neniam citiĝu kiel normaj. Vidu `drafts/README.md`.
+
+## Eldonoj kaj kontrolado
+
+La nuna eldono estas **`DOF-SPEC` `v0.11`** — git-etikedo `v0.11`, komito `9d66541`. Ĝia normiga teksto estas kompleta, kaj ĉiuj kvar referencaj portoj estas kontrolitaj: `patterns/tools/verify_ports.sh` raportas **VERIFIED** (Python 112 kontroloj, Go 83, Rust 83, C++ 84, sen malsukcesoj).
+
+Por konfirmi, ke la legata kopio estas la eldonita:
+
+```sh
+git checkout v0.11
+sha256sum DOF-SPEC.md                   # 4211950fc708cbc6404ad47c2cfbbddadd7d22f5ff3b5b2647a5f3859449c873
+bash patterns/tools/verify_ports.sh     # → VERIFIED
+```
+
+La haketo estas publikigata kune kun la eldono, por ke silenta modifo de la dosiero estu trovebla (§10 de la specifikaĵo). Ĉar `v0.11` estas etikedita, ĉiu posta redakto de `DOF-SPEC.md` ŝanĝas la dosieron, kaj la publikigita valoro ĉesas kongrui kun ĝi. La haketoj de la antaŭaj eldonoj — `v0.7`, `v0.8`, `v0.9.1` kaj la du transiraj versioj, kiuj neniam estis etikeditaj — estas kolektitaj en `references/releases.md`.
 
 ## Kiel ĝi funkcias (la ciklo)
 

@@ -25,6 +25,7 @@ DOF/
     license.md                  ← CC BY-SA 4.0 + Proof of Implementation
     dof-assessment-toolkit.md   ← how to measure DoF of a module / person / system
     framing-traps.md            ← cognitive filter applied before generating options
+    releases.md                 ← released versions and their file fingerprints
   patterns/
     PATTERNS.{md,ru,fr,de,es,eo}  ← engineering blueprint (multilingual)
     python/  rust/  go/  cpp/     ← minimal runnable illustrations (four ports of the same logic)
@@ -35,6 +36,20 @@ DOF/
 Read `SKILL.md` for the philosophy. Read `DOF-SPEC.md` if you are building a conforming implementation — it defines the data model, math, reactive-circuit timing, and the mandatory audit output that the license requires.
 
 `drafts/` holds non-normative working notes: open design questions, candidate formulas and analyses still under discussion. They are informative only — they are not part of `SKILL.md` or `DOF-SPEC.md`, may contradict the current standard, and must not be cited as normative. See `drafts/README.md`.
+
+## Releases and verification
+
+The current release is **`DOF-SPEC` `v0.11`** — git tag `v0.11`, commit `9d66541`. Its normative text is complete and all four reference ports are verified: `patterns/tools/verify_ports.sh` reports **VERIFIED** (Python 112 checks, Go 83, Rust 83, C++ 84, none failing).
+
+To confirm that the copy you are reading is the released one:
+
+```sh
+git checkout v0.11
+sha256sum DOF-SPEC.md                   # 4211950fc708cbc6404ad47c2cfbbddadd7d22f5ff3b5b2647a5f3859449c873
+bash patterns/tools/verify_ports.sh     # → VERIFIED
+```
+
+The digest is published with the release so that a silent modification of the file is detectable (§10 of the specification). Because `v0.11` is tagged, editing `DOF-SPEC.md` after the release changes the file and the published value stops matching it. Fingerprints of the earlier releases — `v0.7`, `v0.8`, `v0.9.1`, and the two transitional versions that were never tagged — are gathered in `references/releases.md`.
 
 ## How it works (the loop)
 

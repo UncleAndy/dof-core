@@ -23,6 +23,7 @@ DOF/
     license.md                  ← CC BY-SA 4.0 + Proof of Implementation
     dof-assessment-toolkit.md   ← cómo medir el DoF de un módulo / persona / sistema
     framing-traps.md            ← filtro cognitivo aplicado antes de generar opciones
+    releases.md                 ← versiones publicadas y sus huellas de archivo
   patterns/
     PATTERNS.{md,ru,fr,de,es,eo}  ← plano de ingeniería (multilingüe)
     python/  rust/  go/  cpp/     ← ilustraciones mínimas ejecutables (cuatro ports de la misma lógica)
@@ -33,6 +34,20 @@ DOF/
 Lea `SKILL.md` por la filosofía. Lea `DOF-SPEC.md` si construye una implementación conforme — define el modelo de datos, las matemáticas, la temporización del circuito reactivo y la auditoría obligatoria que exige la licencia.
 
 `drafts/` contiene notas de trabajo no normativas: preguntas de diseño abiertas, fórmulas candidatas y análisis aún en discusión. Son puramente informativas — no forman parte de `SKILL.md` ni de `DOF-SPEC.md`, pueden contradecir el estándar actual y nunca deben citarse como normativas. Véase `drafts/README.md`.
+
+## Versiones y verificación
+
+La versión actual es **`DOF-SPEC` `v0.11`** — etiqueta de git `v0.11`, commit `9d66541`. Su texto normativo está completo y los cuatro ports de referencia están verificados: `patterns/tools/verify_ports.sh` informa **VERIFIED** (Python 112 comprobaciones, Go 83, Rust 83, C++ 84, sin fallos).
+
+Para confirmar que la copia que lee es la publicada:
+
+```sh
+git checkout v0.11
+sha256sum DOF-SPEC.md                   # 4211950fc708cbc6404ad47c2cfbbddadd7d22f5ff3b5b2647a5f3859449c873
+bash patterns/tools/verify_ports.sh     # → VERIFIED
+```
+
+La huella se publica junto con la versión para que una modificación silenciosa del archivo sea detectable (§10 de la especificación). Como `v0.11` está etiquetada, cualquier edición de `DOF-SPEC.md` posterior a la publicación cambia el archivo y el valor publicado deja de corresponderle. Las huellas de las versiones anteriores — `v0.7`, `v0.8`, `v0.9.1` y las dos versiones de transición que nunca se etiquetaron — están reunidas en `references/releases.md`.
 
 ## Cómo funciona (el bucle)
 

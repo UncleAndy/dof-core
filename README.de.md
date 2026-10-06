@@ -23,6 +23,7 @@ DOF/
     license.md                  ← CC BY-SA 4.0 + Proof of Implementation
     dof-assessment-toolkit.md   ← wie man den DoF eines Moduls / einer Person / eines Systems misst
     framing-traps.md            ← kognitiver Filter vor der Optionsgenerierung
+    releases.md                 ← veröffentlichte Versionen und ihre Datei-Fingerabdrücke
   patterns/
     PATTERNS.{md,ru,fr,de,es,eo}  ← Ingenieur-Blaupause (mehrsprachig)
     python/  rust/  go/  cpp/     ← minimale ausführbare Illustrationen (vier Ports derselben Logik)
@@ -33,6 +34,20 @@ DOF/
 Lesen Sie `SKILL.md` für die Philosophie. Lesen Sie `DOF-SPEC.md`, wenn Sie eine konforme Implementierung bauen — es definiert Datenmodell, Mathematik, die Zeitregel des reaktiven Schaltkreises und das obligatorische Audit, das die Lizenz verlangt.
 
 `drafts/` enthält nicht-normative Arbeitsnotizen: offene Entwurfsfragen, Kandidatenformeln und noch diskutierte Analysen. Sie sind rein informativ — kein Teil von `SKILL.md` oder `DOF-SPEC.md`, können dem aktuellen Standard widersprechen und dürfen niemals als normativ zitiert werden. Siehe `drafts/README.md`.
+
+## Releases und Verifikation
+
+Das aktuelle Release ist **`DOF-SPEC` `v0.11`** — Git-Tag `v0.11`, Commit `9d66541`. Der normative Text ist vollständig, und alle vier Referenz-Ports sind verifiziert: `patterns/tools/verify_ports.sh` meldet **VERIFIED** (Python 112 Prüfungen, Go 83, Rust 83, C++ 84, keine Fehler).
+
+So bestätigen Sie, dass die vorliegende Kopie die veröffentlichte ist:
+
+```sh
+git checkout v0.11
+sha256sum DOF-SPEC.md                   # 4211950fc708cbc6404ad47c2cfbbddadd7d22f5ff3b5b2647a5f3859449c873
+bash patterns/tools/verify_ports.sh     # → VERIFIED
+```
+
+Der Digest wird mit dem Release veröffentlicht, damit eine stille Veränderung der Datei erkennbar ist (§10 der Spezifikation). Da `v0.11` getaggt ist, verändert jede spätere Bearbeitung von `DOF-SPEC.md` die Datei, und der veröffentlichte Wert passt nicht mehr zu ihr. Die Fingerabdrücke der früheren Releases — `v0.7`, `v0.8`, `v0.9.1` und der beiden Übergangsversionen, die nie getaggt wurden — stehen in `references/releases.md`.
 
 ## Wie es funktioniert (die Schleife)
 
