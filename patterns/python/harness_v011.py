@@ -42,9 +42,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from calculus_core import (NET_DELTA_TOLERANCE, ActionOption, DOFCalculusCore,
-                           ObservationContext, ResourceObservation,
-                           SystemStateMatrix, tau_of)
+from calculus_core import (NET_DELTA_TOLERANCE, OBSERVED_HYPOTHESIS_ID,
+                           ActionOption, DOFCalculusCore, ObservationContext,
+                           ResourceObservation, SystemStateMatrix, tau_of)
 import fixture_v07
 import options_v07
 from fixture_v011 import (TAU_FAST_MKS, TAU_MKS, T_REC_V011, default_scene,
@@ -768,6 +768,50 @@ def _decl_for(raw):
 RULER_DIGEST_V07 = "5126fd99641ffdc9c338d3d288fcf3cb6dcf093ca0a423f1cd265b3fcae4152a"
 
 
+# ------------------------------------------- §7 item 48: no observation context
+def test_no_observation_context():
+    """§7 item 48: a cycle with **no observation context** still decides and reports.
+
+    A scene without a graph is decidable — the §4.9 verdicts read `undetermined`
+    and are priced by `u(t)` (§4.7) — so an absent context changes what the
+    quantities **are**, never whether the calculus answers. The refusal a port
+    publishes must be the arithmetic's refusal: the robustly admissible set it
+    reports must equal the set its **own published vectors** license. A port that
+    refuses every candidate for want of a context publishes a `none` the
+    arithmetic never produced, and two ports did exactly that (see §11.66).
+    """
+    print("=== §7 item 48: no observation context is not a refusal ===")
+    raw = scene()
+    # §3.5: the observation of structure arrives outside the state, under
+    # `world`. A cycle that never observed the world has **no observation
+    # context** — and that is the case this asserts, not an error to work
+    # around: the state it is given is still a reading.
+    raw.pop("world", None)
+    orch, state, selected, report = cycle(raw=raw)
+    check("(48) the cycle has no observation context",
+          orch.mapper.last_observation is None)
+
+    singleton = resolved_members(state, None)
+    surface = (len(report.hypotheses) == 1
+               and bool(report.conditional_vectors)
+               and all(len(per_h) == 1 and OBSERVED_HYPOTHESIS_ID in per_h
+                       for per_h in report.conditional_vectors.values()))
+    licensed = sorted(
+        option_id for option_id, per_h in report.conditional_vectors.items()
+        if orch.core.robust_admissible(per_h, singleton))
+    check("(48) the per-reading surface is published, with no context",
+          surface, f"{len(report.hypotheses)} readings, "
+                   f"{len(report.conditional_vectors)} options")
+    check("(48) the published refusal is the arithmetic's refusal",
+          sorted(report.robust_admissible) == licensed,
+          f"published {sorted(report.robust_admissible)} vs licensed {licensed}")
+    check("(48) and the decision agrees with that set",
+          (selected is None) == (not licensed)
+          and (selected is None or selected.option_id in licensed),
+          f"selected {None if selected is None else selected.option_id} "
+          f"vs licensed {licensed}")
+
+
 def main():
     test_singleton()
     test_non_conformant_input()
@@ -783,6 +827,7 @@ def main():
     test_measurement_durations()
     test_robust_reversibility()
     test_after_state_is_own()
+    test_no_observation_context()
     print(f"\nchecks: {PASS + FAIL}, failures: {FAIL}")
     return 0 if FAIL == 0 else 1
 

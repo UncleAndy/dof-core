@@ -121,7 +121,7 @@ bool selects_reversible(const DOFCalculusCore& core, const SystemStateMatrix& st
         {"h_alt", {absent}},
     };
     const ActionOption open = dof::v011_option("b_open", entity, 0.5);
-    auto result = dof::select_conditional(core, state, {closing, open}, members, ctx);
+    auto result = dof::select_conditional(core, state, {closing, open}, members, &ctx);
     const dof::ConditionalSelection& selection = result.second;
     if (std::fabs(robust_key(selection, "a_closing") - robust_key(selection, "b_open")) >
         DOFCalculusCore::net_delta_tolerance) {
@@ -388,7 +388,7 @@ inline int run_harness_v011() {
                 consistency.empty(), detail);
     }
 
-    const auto per_h_all = dof::conditional_vectors(core, members, candidates, ctx);
+    const auto per_h_all = dof::conditional_vectors(core, members, candidates, &ctx);
     check11(failures, "the conditional vectors are produced per option and per reading",
             per_h_all.size() == 2 && per_h_of(per_h_all, "strong").size() == 2);
     const double strong_obs = vector_of(per_h_of(per_h_all, "strong"), kObservedHypothesisId)
@@ -412,7 +412,7 @@ inline int run_harness_v011() {
         hyp("h_bar", true, lows, "one entity sits just above the zero"),
     };
     const ActionOption sink = dof::v011_option("sink", entity, -0.05);
-    const auto per_h_bar = dof::conditional_vectors(core, bar_members, {sink}, ctx);
+    const auto per_h_bar = dof::conditional_vectors(core, bar_members, {sink}, &ctx);
     const std::map<std::string, ConditionalVector>& sink_vectors = per_h_of(per_h_bar, "sink");
     check11(failures,
             "an option that crosses into the zero under one reading is charged there (D1 > 0)",
@@ -442,7 +442,7 @@ inline int run_harness_v011() {
     check11(failures, "a conflict is not reported for a single-member set",
             !dof::hypothesis_conflict(per_h_bar, {h_obs}, {"sink"}));
 
-    const auto chosen = dof::select_conditional(core, observed, candidates, members, ctx);
+    const auto chosen = dof::select_conditional(core, observed, candidates, members, &ctx);
     check11(failures, "among robustly admissible candidates the greatest robust delta wins",
             chosen.first.has_value() && chosen.first->option_id == "strong",
             chosen.first ? chosen.first->option_id : std::string("none"));
@@ -453,7 +453,7 @@ inline int run_harness_v011() {
             chosen.second.net_delta_robust.size() == 2);
 
     // §4.10.4: no fallback to admissible support.
-    const auto chosen_none = dof::select_conditional(core, observed, {sink}, bar_members, ctx);
+    const auto chosen_none = dof::select_conditional(core, observed, {sink}, bar_members, &ctx);
     check11(failures, "an empty robust candidate set yields no action at all",
             !chosen_none.first.has_value(),
             chosen_none.first ? chosen_none.first->option_id : std::string("none"));
@@ -629,7 +629,7 @@ inline int run_harness_v011() {
             }
             const ActionOption& option = per_h.second.option_id == "sink" ? sink : strong;
             const ConditionalVector direct =
-                dof::conditional_vector_of(core, *h_state, option, ctx, per_h.first);
+                dof::conditional_vector_of(core, *h_state, option, &ctx, per_h.first);
             if (per_h.second.d1 != direct.d1 || per_h.second.d2 != direct.d2 ||
                 per_h.second.d3 != direct.d3 ||
                 std::fabs(per_h.second.net_delta - direct.net_delta) > 1e-9) {
@@ -744,6 +744,42 @@ inline int run_harness_v011() {
                 !entry.second.conditional_vectors.empty(),
             std::to_string(entry.second.hypotheses.size()) + " readings, " +
                 std::to_string(entry.second.conditional_vectors.size()) + " options");
+    // §4.10.6: a cycle with **no observation context** still decides and reports. A
+    // scene without a graph is decidable — the §4.9 verdicts read `undetermined` and
+    // are priced by `u(t)` — so an absent context changes what the quantities are,
+    // never whether the calculus answers; and the refusal the entry publishes must be
+    // the arithmetic's refusal: the robustly admissible set it reports must equal the
+    // set its **own published vectors** license. A fresh orchestrator has no context
+    // until it polls, which is exactly the case this asserts.
+    DOFOrchestrator orch_noc(0.05);
+    const auto noc = orch_noc.decide_on_set(observed, nullptr);
+    std::vector<std::string> licensed;
+    bool noc_surface = !noc.second.base.options.empty() &&
+                       !noc.second.conditional_vectors.empty();
+    for (const auto& kv : noc.second.conditional_vectors) {
+        const auto it = kv.second.find(kObservedHypothesisId);
+        if (it == kv.second.end()) {
+            noc_surface = false;
+            continue;
+        }
+        if (!it->second.barred()) licensed.push_back(kv.first);
+    }
+    std::sort(licensed.begin(), licensed.end());
+    std::vector<std::string> published = noc.second.robust_admissible;
+    std::sort(published.begin(), published.end());
+    // And the decision must be the arithmetic's decision too: a cycle that publishes
+    // `[fallback_0]` as robustly admissible and then reports `none` has refused where
+    // its own numbers license action.
+    const bool neg_ok =
+        noc.first.has_value() == !licensed.empty() &&
+        (!noc.first.has_value() ||
+         std::find(licensed.begin(), licensed.end(), noc.first->option_id) != licensed.end());
+    check11(failures, "§4.10.6: a cycle with no observation context still decides and reports",
+            noc_surface && published == licensed && neg_ok,
+            std::string("surface=") + (noc_surface ? "yes" : "no") + ", published " +
+                std::to_string(published.size()) + " vs licensed " +
+                std::to_string(licensed.size()) + ", decided=" +
+                (noc.first.has_value() ? "yes" : "no"));
     std::cout << "\n";
 
     return static_cast<int>(failures.size());

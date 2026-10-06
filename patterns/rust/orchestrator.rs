@@ -275,13 +275,18 @@ impl DofOrchestrator {
         // One conditional pass, and it is the one published: the decision and the
         // report read the same `ConditionalSelection`, so the report cannot describe
         // a decision other than the one that was made (§4.10, §6.3).
+        //
+        // The pass runs **even when the cycle has no observation context**. A scene
+        // without a graph is decidable — §4.9 verdicts read `undetermined` and are
+        // priced by `u(t)` — so a missing context changes what the quantities are,
+        // never whether the calculus answers. Refusing every candidate for want of a
+        // context is an answer the specification does not support: it would report
+        // `none` for a scene in which the reference selects an option, which is a
+        // divergence a reader can see, not a difference of shape (§7, §4.10.6).
         let (groups, rates, weights, cap) = self.gate_context();
-        let (selected, selection) = match ctx {
-            Some(c) => self.core.select_conditional(
-                state, &options, &readings, c, groups, rates, weights, cap,
-            ),
-            None => (None, ConditionalSelection::default()),
-        };
+        let (selected, selection) =
+            self.core
+                .select_conditional(state, &options, &readings, ctx, groups, rates, weights, cap);
 
         let report = self.core.report(
             state,

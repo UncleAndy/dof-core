@@ -559,6 +559,38 @@ func runHarnessV011() {
 		fmt.Sprintf("%d readings, %d options", len(bareReport.Hypotheses),
 			len(bareReport.Options)))
 
+	// §4.10.6: a cycle with **no observation context** still decides and reports. A
+	// scene without a graph is decidable — the §4.9 verdicts read `undetermined` and
+	// are priced by `u(t)` — so an absent context changes what the quantities are,
+	// never whether the calculus answers; and the refusal the entry publishes must be
+	// the arithmetic's refusal: the robustly admissible set it reports must equal the
+	// set its **own published vectors** license. A fresh orchestrator has no context
+	// until it polls, which is exactly the case this asserts.
+	nocOrch := NewDOFOrchestrator(0.05)
+	nocSel, nocReport := nocOrch.DecideOnSet(observed, nil)
+	nocSingleton := ResolvedMembers(observed, nil)
+	nocSurface := len(nocReport.Hypotheses) == 1 && len(nocReport.Options) > 0
+	licensed := []string{}
+	for _, row := range nocReport.Options {
+		if len(row.ConditionalVectors) != 1 {
+			nocSurface = false
+			continue
+		}
+		if _, ok := row.ConditionalVectors[ObservedHypothesisID]; !ok {
+			nocSurface = false
+			continue
+		}
+		if nocOrch.core.RobustAdmissible(row.ConditionalVectors, nocSingleton) {
+			licensed = append(licensed, row.OptionID)
+		}
+	}
+	decidedOK := (nocSel == nil) == (len(licensed) == 0) &&
+		(nocSel == nil || containsString(licensed, nocSel.OptionID))
+	check("§4.10.6: a cycle with no observation context still decides and reports",
+		nocSurface && sameStringSet(nocReport.RobustAdmissible, licensed) && decidedOK,
+		fmt.Sprintf("surface=%v, published %d vs licensed %d, decided=%v",
+			nocSurface, len(nocReport.RobustAdmissible), len(licensed), nocSel != nil))
+
 	// §4.10.6: with no declared set the observed state alone is the answer, and the
 	// per-reading surface is **absent** rather than a one-entry map.
 	flatReport := core.Report(observed, reportCandidates, reportSelected, "FAST_PASS",
@@ -569,6 +601,23 @@ func runHarnessV011() {
 		fmt.Sprintf("%d hypotheses, %d totals",
 			len(flatReport.Hypotheses), len(flatReport.TotalSystemDoFByHypothesis)))
 	fmt.Println()
+}
+
+// sameStringSet reports whether two id lists name the same set (order-free).
+func sameStringSet(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, item := range a {
+		seen[item] = true
+	}
+	for _, item := range b {
+		if !seen[item] {
+			return false
+		}
+	}
+	return true
 }
 
 // containsString reports whether the list holds this id.

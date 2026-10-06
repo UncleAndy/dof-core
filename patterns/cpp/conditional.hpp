@@ -96,7 +96,7 @@ struct ConditionalSelection {
 // could never be converted.
 inline ConditionalVector conditional_vector_of(
     const DOFCalculusCore& core, const SystemStateMatrix& state, const ActionOption& option,
-    const ObservationContext& ctx, const std::string& hypothesis_id,
+    const ObservationContext* ctx, const std::string& hypothesis_id,
     const std::vector<std::vector<std::string>>* groups = nullptr,
     const std::map<std::string, dof::Rate>* rates = nullptr,
     const std::map<std::string, double>* weights = nullptr,
@@ -105,19 +105,26 @@ inline ConditionalVector conditional_vector_of(
     for (const auto& kv : state.entities) {
         dofs[kv.first] = kv.second.current_dof;
     }
-    const ObservationContext h_ctx = ctx.with_dof(dofs);
-    const double current_index = core.calculate_system_dof(state, nullptr, &h_ctx);
+    // §4.9/§4.10: the context may be **absent**, and that is not a refusal. A scene
+    // without a graph is still decidable — the verdicts read `undetermined` and are
+    // priced by `u(t)` — so an absent context changes what the quantities are, never
+    // whether they exist. Refusing here would publish `none` for a scene in which the
+    // reference selects an option: a divergence a reader can see (§7, §4.10.6).
+    const std::optional<ObservationContext> h_ctx =
+        ctx != nullptr ? std::optional<ObservationContext>(ctx->with_dof(dofs)) : std::nullopt;
+    const ObservationContext* h_ctx_ptr = h_ctx ? &*h_ctx : nullptr;
+    const double current_index = core.calculate_system_dof(state, nullptr, h_ctx_ptr);
     const ViabilityResult viable = viability(state, option);
     const FundingPlan plan = core.plan_funding(state, option, groups, rates, weights, cap);
     const CandidateVector vector =
-        core.candidate_vector_for(state, option, &h_ctx, current_index, hypothesis_id);
+        core.candidate_vector_for(state, option, h_ctx_ptr, current_index, hypothesis_id);
     return conditional_vector_from(vector, hypothesis_id, viable.viable, plan.covered);
 }
 
 // §6.3: `{option_id: {hypothesis_id: vector}}`.
 inline std::map<std::string, std::map<std::string, ConditionalVector>> conditional_vectors(
     const DOFCalculusCore& core, const std::vector<Hypothesis>& members,
-    const std::vector<ActionOption>& options, const ObservationContext& ctx,
+    const std::vector<ActionOption>& options, const ObservationContext* ctx,
     const std::vector<std::vector<std::string>>* groups = nullptr,
     const std::map<std::string, dof::Rate>* rates = nullptr,
     const std::map<std::string, double>* weights = nullptr,
@@ -252,7 +259,7 @@ inline bool hypothesis_conflict(
 inline std::pair<std::optional<ActionOption>, ConditionalSelection> select_conditional(
     const DOFCalculusCore& core, const SystemStateMatrix& state,
     const std::vector<ActionOption>& options, const std::vector<Hypothesis>& members,
-    const ObservationContext& ctx,
+    const ObservationContext* ctx,
     const std::vector<std::vector<std::string>>* groups = nullptr,
     const std::map<std::string, dof::Rate>* rates = nullptr,
     const std::map<std::string, double>* weights = nullptr,
@@ -409,23 +416,21 @@ inline std::pair<std::optional<ActionOption>, ReportV011> report_on_set(
     const ObservationContext* ctx = input.ctx;
     ReportV011 out;
     std::optional<ActionOption> decision = selected;
-    if (ctx != nullptr) {
-        std::optional<ConditionalSelection> pass = selection;
-        if (!pass.has_value()) {
-            auto choice = select_conditional(core, state, options, readings, *ctx, input.groups,
-                                             input.rates, input.weights, input.cap);
-            decision = choice.first;
-            pass = choice.second;
-        }
-        out.base = core.report(state, options, decision, mode, input);
-        out.conditional_vectors = pass->conditional_vectors;
-        out.admissible_under = pass->admissible_under;
-        out.net_delta_robust = pass->net_delta_robust;
-        out.robust_admissible = pass->robust_admissible;
-        out.hypothesis_conflict = pass->hypothesis_conflict;
-    } else {
-        out.base = core.report(state, options, std::nullopt, mode, input);
+    // The pass is made **whether or not** the cycle has an observation context: a
+    // scene without a graph is decidable, and the reference computes here (§4.10.6).
+    std::optional<ConditionalSelection> pass = selection;
+    if (!pass.has_value()) {
+        auto choice = select_conditional(core, state, options, readings, ctx, input.groups,
+                                         input.rates, input.weights, input.cap);
+        decision = choice.first;
+        pass = choice.second;
     }
+    out.base = core.report(state, options, decision, mode, input);
+    out.conditional_vectors = pass->conditional_vectors;
+    out.admissible_under = pass->admissible_under;
+    out.net_delta_robust = pass->net_delta_robust;
+    out.robust_admissible = pass->robust_admissible;
+    out.hypothesis_conflict = pass->hypothesis_conflict;
     for (const auto& h : declared) {
         out.hypotheses[h.id] = h;
     }
@@ -435,10 +440,16 @@ inline std::pair<std::optional<ActionOption>, ReportV011> report_on_set(
     out.hypothesis_horizon_mks = hset != nullptr ? hset->horizon_mks : std::nullopt;
     for (const auto& h : readings) {
         out.plausible_hypotheses.push_back(h.id);
-        if (ctx == nullptr) continue;
-        const ObservationContext h_ctx = reading_context(*ctx, h);
+        // §6.2: the per-reading surface is published **even with no observation
+        // context** — the reading's own state is what the totals are read from, and a
+        // context that does not exist is not a reason to drop the map the audit is
+        // read from (the reference computes `h_ctx = None` here, and so does Go).
+        const std::optional<ObservationContext> h_ctx =
+            ctx != nullptr ? std::optional<ObservationContext>(reading_context(*ctx, h))
+                           : std::nullopt;
+        const ObservationContext* h_ctx_ptr = h_ctx ? &*h_ctx : nullptr;
         out.total_system_dof_by_hypothesis[h.id] =
-            core.calculate_system_dof(h.state, nullptr, &h_ctx);
+            core.calculate_system_dof(h.state, nullptr, h_ctx_ptr);
         for (const auto& kv : h.state.entities) {
             if (kv.second.measurement.has_value()) {
                 out.lens_terms_by_hypothesis[kv.first][h.id] = kv.second.measurement->terms;
@@ -446,7 +457,7 @@ inline std::pair<std::optional<ActionOption>, ReportV011> report_on_set(
                     kv.second.measurement->binding_lens;
             }
             out.recoverability_by_hypothesis[kv.first][h.id] =
-                core.recoverability_row(kv.first, &h_ctx);
+                core.recoverability_row(kv.first, h_ctx_ptr);
         }
     }
     // §6.3: the key that barred a candidate is read **under the reading that barred

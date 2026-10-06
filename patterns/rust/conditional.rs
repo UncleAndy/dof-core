@@ -106,7 +106,7 @@ impl DofCalculusCore {
         &self,
         state: &SystemStateMatrix,
         option: &ActionOption,
-        ctx: &ObservationContext,
+        ctx: Option<&ObservationContext>,
         hypothesis_id: &str,
         groups: Option<&Vec<Vec<String>>>,
         rates: Option<&BTreeMap<String, Rate>>,
@@ -117,14 +117,19 @@ impl DofCalculusCore {
         for (eid, entity) in state.entities.iter() {
             dofs.insert(eid.clone(), entity.current_dof);
         }
-        let h_ctx = ctx.with_dof(dofs);
-        let current_index = self.calculate_system_dof(state, None, Some(&h_ctx));
+        // §4.9/§4.10: the context may be **absent**, and that is not a refusal. A
+        // scene without a graph is still decidable — the verdicts read `undetermined`
+        // and are priced by `u(t)` — so an absent context changes what the quantities
+        // are, never whether they exist. Both the reference and the Go port compute
+        // here; refusing would be an answer the calculus does not support.
+        let h_ctx: Option<ObservationContext> = ctx.map(|c| c.with_dof(dofs));
+        let current_index = self.calculate_system_dof(state, None, h_ctx.as_ref());
         let viability = self.viability(state, option);
         let plan = self.plan_funding(state, option, groups, rates, weights, cap);
         let vector = self.candidate_vector_for(
             state,
             option,
-            Some(&h_ctx),
+            h_ctx.as_ref(),
             current_index,
             hypothesis_id,
         );
@@ -136,7 +141,7 @@ impl DofCalculusCore {
         &self,
         members: &[Hypothesis],
         options: &[ActionOption],
-        ctx: &ObservationContext,
+        ctx: Option<&ObservationContext>,
         groups: Option<&Vec<Vec<String>>>,
         rates: Option<&BTreeMap<String, Rate>>,
         weights: Option<&BTreeMap<String, f64>>,
@@ -315,7 +320,7 @@ impl DofCalculusCore {
         state: &SystemStateMatrix,
         options: &[ActionOption],
         members: &[Hypothesis],
-        ctx: &ObservationContext,
+        ctx: Option<&ObservationContext>,
         groups: Option<&Vec<Vec<String>>>,
         rates: Option<&BTreeMap<String, Rate>>,
         weights: Option<&BTreeMap<String, f64>>,

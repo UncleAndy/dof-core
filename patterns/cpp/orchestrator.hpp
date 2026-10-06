@@ -211,14 +211,17 @@ public:
             throw std::invalid_argument(message);
         }
         const std::vector<dof::Hypothesis> readings = dof::plausible_members(declared);
-        std::optional<dof::ConditionalSelection> pass;
-        std::optional<ActionOption> decision;
-        if (ctx != nullptr) {
-            auto choice = dof::select_conditional(core_, state, gated.first, readings, *ctx,
-                                             groups_ptr(), rates_ptr(), weights_ptr(), cap_value());
-            decision = choice.first;
-            pass = choice.second;
-        }
+        // §4.10: one conditional pass, and it is the one published — and it runs even
+        // when the cycle has no observation context. A scene without a graph is
+        // decidable (the §4.9 verdicts read `undetermined`, priced by `u(t)`), so an
+        // absent context changes what the quantities are, never whether the calculus
+        // answers; refusing every candidate for want of a context would publish `none`
+        // for a scene in which the reference selects an option (§7, §4.10.6).
+        const auto choice = dof::select_conditional(core_, state, gated.first, readings, ctx,
+                                                    groups_ptr(), rates_ptr(), weights_ptr(),
+                                                    cap_value());
+        const std::optional<ActionOption> decision = choice.first;
+        const std::optional<dof::ConditionalSelection> selection = choice.second;
         ReportInput in;
         in.declaration = mapper_.last_declaration;
         in.removed = gated.second;
@@ -229,7 +232,7 @@ public:
         in.ctx = ctx;
         fill_means_provenance(state, in);
         return dof::report_on_set(core_, state, gated.first, mode_for(tau_of(state)), hset, in,
-                             decision, pass);
+                                  decision, selection);
     }
 
 private:

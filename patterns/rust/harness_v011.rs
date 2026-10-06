@@ -543,7 +543,7 @@ pub fn run_harness_v011() -> Vec<String> {
         &format!("{:?}", consistency),
     );
 
-    let per_h_all = core.conditional_vectors(&members, &candidates, &ctx, None, None, None, None);
+    let per_h_all = core.conditional_vectors(&members, &candidates, Some(&ctx), None, None, None, None);
     check11(
         &mut failures,
         "the conditional vectors are produced per option and per reading",
@@ -578,7 +578,7 @@ pub fn run_harness_v011() -> Vec<String> {
     let per_h_bar = core.conditional_vectors(
         &bar_members,
         &[sink.clone()],
-        &ctx,
+        Some(&ctx),
         None,
         None,
         None,
@@ -631,7 +631,7 @@ pub fn run_harness_v011() -> Vec<String> {
     );
 
     let (chosen, selection) =
-        core.select_conditional(&observed, &candidates, &members, &ctx, None, None, None, None);
+        core.select_conditional(&observed, &candidates, &members, Some(&ctx), None, None, None, None);
     check11(
         &mut failures,
         "among robustly admissible candidates the greatest robust delta wins",
@@ -659,7 +659,7 @@ pub fn run_harness_v011() -> Vec<String> {
         &observed,
         &[sink.clone()],
         &bar_members,
-        &ctx,
+        Some(&ctx),
         None,
         None,
         None,
@@ -817,7 +817,7 @@ pub fn run_harness_v011() -> Vec<String> {
         &observed,
         &report_candidates,
         &bar_members,
-        &ctx,
+        Some(&ctx),
         None,
         None,
         None,
@@ -889,7 +889,7 @@ pub fn run_harness_v011() -> Vec<String> {
             let direct = core.conditional_vector_of(
                 &h.state,
                 &option,
-                &ctx,
+                Some(&ctx),
                 &h.id,
                 None,
                 None,
@@ -1091,6 +1091,45 @@ pub fn run_harness_v011() -> Vec<String> {
         ),
     );
 
+    // §4.10.6: a cycle with **no observation context** still decides and reports. A
+    // scene without a graph is decidable — the §4.9 verdicts read `undetermined` and
+    // are priced by `u(t)` — so an absent context changes what the quantities are,
+    // never whether the calculus answers; and the refusal the entry publishes must be
+    // the arithmetic's refusal: the robustly admissible set it reports must equal the
+    // set its **own published vectors** license. A fresh orchestrator has no context
+    // until it polls, which is exactly the case this asserts.
+    let mut orch_noc = DofOrchestrator::new(0.05);
+    let (noc_flat, _) = orch_noc.decide(&observed);
+    let (noc_set, noc_report) = orch_noc.decide_on_set(&observed, None);
+    let mut licensed: Vec<String> = Vec::new();
+    let mut noc_surface = !noc_report.options.is_empty();
+    for row in noc_report.options.iter() {
+        match row.conditional_vectors.get(OBSERVED_HYPOTHESIS_ID) {
+            Some(v) if !v.barred() => licensed.push(row.option_id.clone()),
+            Some(_) => {}
+            None => noc_surface = false,
+        }
+    }
+    licensed.sort();
+    let mut published = noc_report.robust_admissible.clone();
+    published.sort();
+    check11(
+        &mut failures,
+        "§4.10.6: a cycle with no observation context still decides and reports",
+        noc_surface
+            && published == licensed
+            && noc_set.as_ref().map(|o| o.option_id.clone())
+                == noc_flat.as_ref().map(|o| o.option_id.clone()),
+        &format!(
+            "surface={} published {:?} vs licensed {:?}, flat={:?} set={:?}",
+            noc_surface,
+            published,
+            licensed,
+            noc_flat.as_ref().map(|o| o.option_id.clone()),
+            noc_set.as_ref().map(|o| o.option_id.clone())
+        ),
+    );
+
     failures
 }
 
@@ -1154,7 +1193,7 @@ fn selects_reversible(
         state,
         &[closing, open],
         members,
-        ctx,
+        Some(ctx),
         None,
         None,
         None,
