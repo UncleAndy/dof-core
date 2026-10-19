@@ -26,6 +26,8 @@ Rules for this directory:
 | `measurement-normalization.md` | The measurement & normalization contract: the three lenses, the Variety formula `ψ_var = V/(V + V_env)`, the unknown-contribution defect (`dof_known = false`), the ignorance penalty `u(t)`, time budget and action gates (§8.6), and the open question list (A–I). |
 | `real-idea-1.md` | DoF as a space of future possibilities: local estimation instead of world modeling, why ΔDoF matters more than the absolute value, and why the action space matters more than the state space. |
 | `real-idea-2.md` | The three terms / the state-DoF vs action-DoF distinction, and why a single one of them is not enough. |
+| `justification-article.md` | Plan and chapter-by-chapter sketch of the public article that justifies DOF from scratch: universal well-being as the goal, the Nash product as the only aggregation that refuses to pay for a loss, well-being identified with the number of real paths, then the consequences and where they are stricter than ordinary morality. Draft prose, not the article. |
+| `justification-article-text.md` | First full text draft of that article (17 chapters, ~16.6k characters, one formula plate): written from the plan above, opens with the Strugatsky line and its part-by-part accounting, marks the "growth over time" claim as the author's own extension rather than the standard's rule. |
 
 ---
 
