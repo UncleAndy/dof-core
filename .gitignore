@@ -34,3 +34,5 @@ build/
 
 patterns/go/dofcore
 patterns/rust/target
+
+.agents/
