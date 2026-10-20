@@ -27,7 +27,8 @@ Rules for this directory:
 | `real-idea-1.md` | DoF as a space of future possibilities: local estimation instead of world modeling, why ΔDoF matters more than the absolute value, and why the action space matters more than the state space. |
 | `real-idea-2.md` | The three terms / the state-DoF vs action-DoF distinction, and why a single one of them is not enough. |
 | `justification-article.md` | Plan and chapter-by-chapter sketch of the public article that justifies DOF from scratch: universal well-being as the goal, the Nash product as the only aggregation that refuses to pay for a loss, well-being identified with the number of real paths, then the consequences and where they are stricter than ordinary morality. Draft prose, not the article. |
-| `justification-article-text.md` | First full text draft of that article (17 chapters, ~16.6k characters, one formula plate): written from the plan above, opens with the Strugatsky line and its part-by-part accounting, marks the "growth over time" claim as the author's own extension rather than the standard's rule. |
+| `justification-article-text.md` | Full text of the public article «Моральная теорема» (*The Moral Theorem*): preface plus 7 parts and 17 chapters, 223 lines and about 20.5k characters, one formula plate. Written from the plan above, opens with the Strugatsky line and its part-by-part accounting, marks the "growth over time" claim as the author's own extension rather than the standard's rule, and closes by reducing the whole argument to two input statements plus Nash's proven theorem. |
+| `justification-article-text.en.md` | English version of the same article, "The Moral Theorem": paragraph-for-paragraph match with the Russian text (223 lines, the same 8 sections, 17 chapters and formula plate), held to the same typographic rules (no em dashes, straight quotes, ASCII spaces only). |
 
 ---
 
