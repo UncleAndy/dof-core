@@ -210,7 +210,7 @@ And one more thing it does not do: it does not decide for a person what matters 
 
 "This is a utopia, how would it be introduced?" The measure does not require a world government. It is applied by anyone who makes decisions and is obliged to explain them: an engineer, a doctor, an official, a designer.
 
-### How to make sure this is not invented
+### How to make sure this is not mere fantasy
 
 I am not asking you to believe. There is little to check here, because the whole article has exactly two input statements.
 
